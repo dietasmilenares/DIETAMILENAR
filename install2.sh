@@ -40,7 +40,24 @@ log_error()  { echo -e "  ${RED}[✘]${NC} $1"; exit 1; }
 # --- 3. VERIFICAÇÕES DE AMBIENTE ---
 [[ ${EUID:-999} -eq 0 ]] || log_error "Execute como root: sudo bash install-socialproof.sh"
 
-# --- 4. BUSCA PELO SOCIALPROOF.ZIP ---
+# --- 4. DETECÇÃO DE INSTALAÇÃO EXISTENTE (install.sh) ---
+DIETA_ENV="/var/www/dieta-milenar/.env"
+DETECTED_INSTALL=false
+
+if [[ -f "$DIETA_ENV" ]]; then
+    _get_env() { grep "^${1}=" "$DIETA_ENV" | cut -d'=' -f2- | tr -d '"' | tr -d "'"; }
+    DETECTED_DB_USER=$(_get_env DB_USER)
+    DETECTED_DB_PASS=$(_get_env DB_PASS)
+    DETECTED_DOMAIN=$(grep "server_name" /etc/nginx/sites-available/dieta-milenar 2>/dev/null | awk '{print $2}' | tr -d ';' | head -1 || true)
+    [[ -z "$DETECTED_DOMAIN" ]] && DETECTED_DOMAIN=""
+    DETECTED_INSTALL=true
+    echo -e "  ${GREEN}[✔]${NC} Instalação do Dieta Milenar detectada"
+    echo -e "  ${CYAN}  → DB_USER: ${DETECTED_DB_USER}${NC}"
+    echo -e "  ${CYAN}  → DOMAIN:  ${DETECTED_DOMAIN:-não detectado}${NC}"
+    echo ""
+fi
+
+# --- 5. BUSCA PELO SOCIALPROOF.ZIP ---
 log_status "Buscando arquivo 'socialproof.zip' no sistema..."
 ZIP_FILE=$(find /home/ubuntu -name "socialproof.zip" -print -quit)
 
@@ -96,21 +113,51 @@ USE_DOMAIN=${USE_DOMAIN:-n}
 DOMAIN="$PUBLIC_IP"
 if [[ "$USE_DOMAIN" =~ ^[sS]$ ]]; then
     read -rp "  Digite o domínio (ex: meusite.com): " DOMAIN
+elif [[ "$DETECTED_INSTALL" == true && -n "$DETECTED_DOMAIN" ]]; then
+    DOMAIN="$DETECTED_DOMAIN"
+    log_status "Domínio herdado do Dieta Milenar: $DOMAIN"
 fi
 DB_NAME="socialproof"
 log_status "Banco de dados: ${DB_NAME} (padrão fixo)"
-read -rp "  Usuário MySQL [sp_user]: " DB_USER; DB_USER=${DB_USER:-sp_user}
-read -rsp "  Senha MySQL (oculta) [root]: " DB_PASS; echo; DB_PASS=${DB_PASS:-root}
+if [[ "$DETECTED_INSTALL" == true ]]; then
+    DB_USER="$DETECTED_DB_USER"
+    DB_PASS="$DETECTED_DB_PASS"
+    log_status "Credenciais MySQL herdadas do Dieta Milenar: usuário=${DB_USER}"
+else
+    read -rp "  Usuário MySQL [sp_user]: " DB_USER; DB_USER=${DB_USER:-sp_user}
+    read -rsp "  Senha MySQL (oculta) [root]: " DB_PASS; echo; DB_PASS=${DB_PASS:-root}
+fi
 
 # =============================================================================
 #  EXECUÇÃO DAS ETAPAS
 # =============================================================================
 clear
 header "ETAPA 1 — DEPENDÊNCIAS"
-apt-get update -qq && apt-get install -y -qq --no-install-recommends \
-  ca-certificates gnupg curl git unzip rsync nginx \
-  mariadb-server openssl \
-  php php-mbstring php-zip php-gd php-json php-curl php-mysql php-fpm >/dev/null
+apt-get update -qq
+
+# Nginx
+if command -v nginx &>/dev/null; then
+    log_status "Nginx já instalado — pulando"
+else
+    apt-get install -y -qq --no-install-recommends nginx >/dev/null
+    log_status "Nginx instalado"
+fi
+
+# MariaDB/MySQL
+if command -v mysql &>/dev/null || command -v mariadb &>/dev/null; then
+    log_status "MySQL/MariaDB já instalado — pulando"
+else
+    apt-get install -y -qq --no-install-recommends mariadb-server >/dev/null
+    log_status "MariaDB instalado"
+fi
+
+# PHP
+if command -v php &>/dev/null; then
+    log_status "PHP já instalado — pulando"
+else
+    apt-get install -y -qq --no-install-recommends       php php-mbstring php-zip php-gd php-json php-curl php-mysql php-fpm >/dev/null
+    log_status "PHP instalado"
+fi
 
 # Detecta versão do PHP e socket fpm
 PHP_VERSION=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null || echo "8.3")
@@ -121,8 +168,25 @@ log_status "PHP ${PHP_VERSION} configurado — socket: $PHP_FPM_SOCK"
 
 header "ETAPA 2 — CONFIGURANDO MYSQL"
 systemctl start mariadb 2>/dev/null || systemctl start mysql 2>/dev/null || true
-mysql -u root <<SQL
+
+# Verifica se banco já existe
+DB_EXISTS=$(mysql -u root -e "SHOW DATABASES LIKE '${DB_NAME}';" 2>/dev/null | grep -c "${DB_NAME}" || true)
+if [[ "$DB_EXISTS" -gt 0 ]]; then
+    log_status "Banco '${DB_NAME}' já existe — pulando criação"
+else
+    mysql -u root <<SQL
 CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+SQL
+    log_status "Banco '${DB_NAME}' criado"
+fi
+
+# Verifica se usuário já existe
+USER_EXISTS=$(mysql -u root -e "SELECT COUNT(*) FROM mysql.user WHERE user='${DB_USER}';" 2>/dev/null | tail -1 || true)
+if [[ "$USER_EXISTS" -gt 0 ]]; then
+    log_status "Usuário MySQL '${DB_USER}' já existe — apenas concedendo permissões"
+fi
+
+mysql -u root <<SQL
 CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost'  IDENTIFIED BY '${DB_PASS}';
 CREATE USER IF NOT EXISTS '${DB_USER}'@'127.0.0.1' IDENTIFIED BY '${DB_PASS}';
 GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost';
@@ -271,6 +335,17 @@ chmod 640 "$INSTALL_DIR/includes/config.php"
 log_status "Permissões configuradas"
 
 header "ETAPA 7 — CONFIGURANDO NGINX"
+# Se Nginx do dieta-milenar já existe, adiciona bloco /socialproof nele
+DIETA_NGINX="/etc/nginx/sites-available/dieta-milenar"
+if [[ -f "$DIETA_NGINX" ]] && ! grep -q "location.*socialproof" "$DIETA_NGINX"; then
+    log_status "Config do Dieta Milenar detectada — integrando /socialproof"
+    sed -i "/location \/ {/i\    # ── SocialProof (PHP) ────────────────────────────\n    location ^~ /socialproof {\n        alias ${INSTALL_DIR};\n        index index.php index.html;\n        try_files \$uri \$uri/ /socialproof/index.php\$is_args\$args;\n        location ~ \.php$ {\n            fastcgi_pass unix:${PHP_FPM_SOCK};\n            fastcgi_index index.php;\n            fastcgi_param SCRIPT_FILENAME \$request_filename;\n            include fastcgi_params;\n        }\n    }\n" "$DIETA_NGINX"
+    nginx -t && systemctl reload nginx
+    log_status "Bloco /socialproof integrado ao Nginx do Dieta Milenar"
+elif [[ -f "$DIETA_NGINX" ]] && grep -q "location.*socialproof" "$DIETA_NGINX"; then
+    log_status "Bloco /socialproof já existe no Nginx — pulando"
+    nginx -t && systemctl reload nginx
+else
 cat > "/etc/nginx/sites-available/socialproof" <<NGINX
 server {
     listen 80;
@@ -307,9 +382,9 @@ server {
 NGINX
 
 ln -sf "/etc/nginx/sites-available/socialproof" "/etc/nginx/sites-enabled/"
-rm -f /etc/nginx/sites-enabled/default
 nginx -t && systemctl restart nginx
 log_status "Nginx configurado na porta 80"
+fi
 
 # =============================================================================
 #  RESUMO FINAL
