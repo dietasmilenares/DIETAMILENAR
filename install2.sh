@@ -115,10 +115,18 @@ SPCONF
 chown www-data:www-data "$INSTALL_DIR/includes/config.php"
 chmod 640 "$INSTALL_DIR/includes/config.php"
 
-# Importar SQL se existir
-SP_SQL=$(find "$INSTALL_DIR" -name "*.sql" -print -quit)
-if [[ -n "$SP_SQL" ]]; then
-    mysql -u "$DB_USER" -p"$DB_PASS" "socialproof" < "$SP_SQL" 2>/dev/null || log_warn "Aviso na importação do SQL."
+# --- IMPORTAÇÃO DO BANCO DE DADOS (ATUALIZADO) ---
+SPECIFIC_SQL="$INSTALL_DIR/DataBaseFULL/Dieta-Faraonica-Data-Base-Completa_2.sql"
+
+if [[ -f "$SPECIFIC_SQL" ]]; then
+    log_status "Importando banco de dados: Dieta-Faraonica-Data-Base-Completa_2.sql"
+    mysql -u "$DB_USER" -p"$DB_PASS" "socialproof" < "$SPECIFIC_SQL" 2>/dev/null || log_warn "Erro na importação do SQL específico."
+else
+    log_warn "Arquivo específico não encontrado em $SPECIFIC_SQL, tentando busca genérica..."
+    SP_SQL=$(find "$INSTALL_DIR" -name "*.sql" -print -quit)
+    if [[ -n "$SP_SQL" ]]; then
+        mysql -u "$DB_USER" -p"$DB_PASS" "socialproof" < "$SP_SQL" 2>/dev/null || log_warn "Aviso na importação do SQL genérico."
+    fi
 fi
 
 header "ETAPA 5 — INTEGRAÇÃO NGINX (PORTA 80)"
