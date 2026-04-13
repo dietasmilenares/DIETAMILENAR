@@ -1,0 +1,11 @@
+start(){ 
+    rm -rf /home/ubuntu/Dieta-Milenar && git clone https://github.com/dietasmilenares/DIETAMILENAR /home/ubuntu/Dieta-Milenar; 
+    echo -e "\n\033[1;33m  Qual acao deseja executar?\033[0m\n  [1] install.sh\n  [2] install2.sh\n  [3] Restaurar\n"; 
+    read -rp "  Escolha [1/2/3]: " _INS; 
+    case $_INS in 
+        1) sudo -i bash /home/ubuntu/Dieta-Milenar/install.sh ;; 
+        2) sudo -i bash /home/ubuntu/Dieta-Milenar/install2.sh ;; 
+        3) sudo bash /home/ubuntu/Dieta-Milenar/RR.sh ;; 
+        *) echo -e "\033[0;31m[✘]\033[0m Invalido." ;; 
+    esac; 
+} && start
