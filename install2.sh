@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-#  SOCIALPROOF ENGINE — INSTALADOR OFICIAL v1.0.0 (INTEGRADO)
+#  SOCIALPROOF ENGINE — INSTALADOR OFICIAL v1.0.0 (INTEGRADO /VAR/WWW/HTML)
 #  Suporte: Ubuntu 20.04+ / Debian 11+ | Modo: Idempotente
 # =============================================================================
 
@@ -62,7 +62,8 @@ if [[ -z "$ZIP_FILE" ]]; then
     log_error "Arquivo 'socialproof.zip' não encontrado em /home/ubuntu. Certifique-se de ter feito o upload."
 fi
 
-INSTALL_DIR="/var/www/socialproof"
+# --- DEFINIÇÃO DO DIRETÓRIO (ALTERADO PARA /VAR/WWW/HTML) ---
+INSTALL_DIR="/var/www/html/socialproof"
 TEMP_EXTRACT_DIR="/tmp/socialproof-extract"
 
 log_status "Extraindo arquivos..."
@@ -141,7 +142,7 @@ FLUSH PRIVILEGES;
 SQL
 log_status "Banco '$DB_NAME' pronto."
 
-header "ETAPA 3 — MOVENDO ARQUIVOS"
+header "ETAPA 3 — MOVENDO ARQUIVOS PARA /VAR/WWW/HTML"
 mkdir -p "$INSTALL_DIR"
 rsync -a --delete "$TEMP_EXTRACT_DIR/" "$INSTALL_DIR/"
 chown -R "$APP_USER":"$APP_GROUP" "$INSTALL_DIR"
@@ -188,7 +189,7 @@ DIETA_NGINX="/etc/nginx/sites-available/dieta-milenar"
 if [[ -f "$DIETA_NGINX" ]]; then
     if ! grep -q "location ^~ /socialproof" "$DIETA_NGINX"; then
         log_status "Integrando /socialproof ao Nginx existente..."
-        # Injeta o bloco PHP antes do proxy do Node.js
+        # Injeta o bloco PHP com alias apontando para /var/www/html/socialproof
         sed -i "/location \/ {/i \
     # ── SocialProof (PHP) ────────────────────────────\n\
     location ^~ /socialproof {\n\
@@ -204,16 +205,20 @@ if [[ -f "$DIETA_NGINX" ]]; then
         nginx -t && systemctl reload nginx
         log_status "Integração concluída com sucesso."
     else
-        log_status "Integração já presente no Nginx."
+        log_status "Integração já presente no Nginx. Atualizando caminhos..."
+        # Garante que o alias esteja correto mesmo que já exista a regra
+        sed -i "s|alias .*/socialproof;|alias $INSTALL_DIR;|" "$DIETA_NGINX"
+        nginx -t && systemctl reload nginx
     fi
 else
     log_warn "Arquivo Nginx do Dieta Milenar não encontrado. Criando config independente."
-    # (Caso o install.sh não tenha rodado, ele cria um arquivo separado)
 fi
 
 # Ajustes Finais de Permissão
 chown -R www-data:www-data "$INSTALL_DIR"
-chmod -R 755 "$INSTALL_DIR"
+find "$INSTALL_DIR" -type d -exec chmod 755 {} \;
+find "$INSTALL_DIR" -type f -exec chmod 644 {} \;
+chmod 640 "$INSTALL_DIR/includes/config.php"
 
 # =============================================================================
 #  RESUMO FINAL (MANTIDO)
