@@ -55,6 +55,8 @@ INSTALL_DIR="/var/www/dieta-milenar"
 log_status "Extraindo projeto.zip..."
 rm -rf "$TEMP_EXTRACT_DIR"
 mkdir -p "$TEMP_EXTRACT_DIR"
+# Garantir que unzip está instalado antes de usar
+apt-get install -y -qq unzip >/dev/null
 unzip -q "$ZIP_FILE" -d "$TEMP_EXTRACT_DIR"
 
 PROJECT_SRC="$TEMP_EXTRACT_DIR"
@@ -163,17 +165,28 @@ cd "$INSTALL_DIR"
 runuser -l "$APP_USER" -c "cd $INSTALL_DIR && npm install --silent && npm run build --silent"
 
 header "ETAPA 8 — CONFIGURANDO PM2"
+# Identifica se o server.js está na raiz ou na dist (Vite costuma deixar na raiz)
+if [[ -f "$INSTALL_DIR/server.js" ]]; then
+    SERVER_SCRIPT="server.js"
+elif [[ -f "$INSTALL_DIR/dist/server.js" ]]; then
+    SERVER_SCRIPT="dist/server.js"
+else
+    # Fallback caso não encontre nenhum (tenta a raiz por padrão)
+    SERVER_SCRIPT="server.js"
+fi
+
 cat > "$INSTALL_DIR/ecosystem.config.cjs" <<EOF
 module.exports = {
   apps: [{
     name: 'dieta-milenar',
-    script: 'dist/server.js',
+    script: '${SERVER_SCRIPT}',
     interpreter: 'node',
     cwd: '${INSTALL_DIR}',
     env_production: { NODE_ENV: 'production' }
   }]
 };
 EOF
+runuser -l "$APP_USER" -c "pm2 delete dieta-milenar --silent || true"
 runuser -l "$APP_USER" -c "pm2 start $INSTALL_DIR/ecosystem.config.cjs --env production"
 runuser -l "$APP_USER" -c "pm2 save --silent"
 
@@ -186,6 +199,8 @@ server {
         proxy_pass http://127.0.0.1:3000;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
     }
 }
 NGINX
