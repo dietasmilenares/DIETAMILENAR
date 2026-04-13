@@ -1,7 +1,7 @@
 #!/bin/bash
 # =============================================================================
-#  SOCIALPROOF ENGINE — INSTALADOR OFICIAL v1.0.0 (INTEGRADO /VAR/WWW/HTML)
-#  Suporte: Ubuntu 20.04+ / Debian 11+ | Modo: Idempotente
+#  SOCIALPROOF ENGINE — INSTALADOR OFICIAL v1.1.0
+#  INTEGRAÇÃO SEGURA: /var/www/html/socialproof (PORTA 80)
 # =============================================================================
 
 set -euo pipefail
@@ -12,17 +12,16 @@ umask 022
 LOG_FILE="/var/log/socialproof-install.log"
 touch "$LOG_FILE"
 exec > >(tee -a "$LOG_FILE") 2>&1
-echo "--- Início da Instalação: $(date) ---" >> "$LOG_FILE"
 
-# --- 1. CORES E ESTILOS (MANTIDOS) ---
+# --- 1. CORES E ESTILOS ---
 GOLD='\033[38;5;220m'; BGDARK='\033[48;5;232m'; BOLD='\033[1m'; NC='\033[0m'
-DIM='\033[2m'; CYAN='\033[0;36m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'
+CYAN='\033[0;36m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'
 
-# --- 2. FUNÇÕES DE LAYOUT (MANTIDAS) ---
+# --- 2. FUNÇÕES DE LAYOUT ---
 TERM_WIDTH=$(tput cols 2>/dev/null || echo 80)
 draw_line() {
-    local char=$1; local color=$2; local bg=${3:-}
-    echo -ne "${bg}${color}${BOLD}  "
+    local char=$1; local color=$2
+    echo -ne "${color}${BOLD}  "
     for ((i=1; i<=$((TERM_WIDTH - 4)); i++)); do echo -n "$char"; done
     echo -e "${NC}"
 }
@@ -37,202 +36,131 @@ log_status() { echo -e "  ${GREEN}[✔]${NC} $1"; }
 log_warn()   { echo -e "  ${YELLOW}[⚠]${NC} $1"; }
 log_error()  { echo -e "  ${RED}[✘]${NC} $1"; exit 1; }
 
-# --- 3. VERIFICAÇÕES DE AMBIENTE ---
+# --- 3. VERIFICAÇÕES INICIAIS ---
 [[ ${EUID:-999} -eq 0 ]] || log_error "Execute como root: sudo bash install2.sh"
 
-# --- 4. DETECÇÃO DE INSTALAÇÃO EXISTENTE (DIETA MILENAR) ---
+# --- 4. DETECÇÃO DE INSTALAÇÃO EXISTENTE (HERANÇA DO INSTALL.SH) ---
 DIETA_ENV="/var/www/dieta-milenar/.env"
+DIETA_NGINX="/etc/nginx/sites-available/dieta-milenar"
 DETECTED_INSTALL=false
 
 if [[ -f "$DIETA_ENV" ]]; then
     _get_env() { grep "^${1}=" "$DIETA_ENV" | cut -d'=' -f2- | tr -d '"' | tr -d "'" | tr -d '\r'; }
-    DETECTED_DB_USER=$(_get_env DB_USER)
-    DETECTED_DB_PASS=$(_get_env DB_PASS)
-    DETECTED_DOMAIN=$(grep "server_name" /etc/nginx/sites-available/dieta-milenar 2>/dev/null | awk '{print $2}' | tr -d ';' | head -1 || true)
-    [[ -z "$DETECTED_DOMAIN" ]] && DETECTED_DOMAIN=""
+    DB_USER=$(_get_env DB_USER)
+    DB_PASS=$(_get_env DB_PASS)
+    DOMAIN=$(grep "server_name" "$DIETA_NGINX" 2>/dev/null | awk '{print $2}' | tr -d ';' | head -1 || echo "localhost")
     DETECTED_INSTALL=true
-    log_status "Instalação do Dieta Milenar detectada. Importando configurações."
+    log_status "Configurações detectadas do Dieta Milenar (DB: $DB_USER | Domínio: $DOMAIN)"
+else
+    # Fallback caso o install.sh não tenha sido rodado ainda
+    header "CONFIGURAÇÃO MANUAL (INSTALL.SH NÃO DETECTADO)"
+    read -rp "  Domínio/IP: " DOMAIN
+    read -rp "  Usuário MySQL [dieta_user]: " DB_USER; DB_USER=${DB_USER:-dieta_user}
+    read -rsp "  Senha MySQL: " DB_PASS; echo; DB_PASS=${DB_PASS:-root}
 fi
 
-# --- 5. BUSCA PELO SOCIALPROOF.ZIP ---
-log_status "Buscando arquivo 'socialproof.zip' em /home/ubuntu..."
+# --- 5. BUSCA E PREPARAÇÃO DOS ARQUIVOS ---
+log_status "Buscando 'socialproof.zip'..."
 ZIP_FILE=$(find /home/ubuntu -name "socialproof.zip" -print -quit)
+[[ -z "$ZIP_FILE" ]] && log_error "'socialproof.zip' não encontrado em /home/ubuntu"
 
-if [[ -z "$ZIP_FILE" ]]; then
-    log_error "Arquivo 'socialproof.zip' não encontrado em /home/ubuntu. Certifique-se de ter feito o upload."
-fi
-
-# --- DEFINIÇÃO DO DIRETÓRIO (ALTERADO PARA /VAR/WWW/HTML) ---
 INSTALL_DIR="/var/www/html/socialproof"
 TEMP_EXTRACT_DIR="/tmp/socialproof-extract"
 
-log_status "Extraindo arquivos..."
-rm -rf "$TEMP_EXTRACT_DIR"
-mkdir -p "$TEMP_EXTRACT_DIR"
+rm -rf "$TEMP_EXTRACT_DIR" "$INSTALL_DIR"
+mkdir -p "$TEMP_EXTRACT_DIR" "$INSTALL_DIR"
 unzip -qo "$ZIP_FILE" -d "$TEMP_EXTRACT_DIR"
 
-APP_USER="www-data"
-APP_GROUP="www-data"
-export DEBIAN_FRONTEND=noninteractive
-
 # =============================================================================
-#  TELA 1: BANNER INICIAL (MANTIDO)
+#  EXECUÇÃO
 # =============================================================================
 clear
-echo -e "${BGDARK}${GOLD}${BOLD}"
-draw_line "═" "$GOLD" "$BGDARK"
-center_print "SOCIALPROOF ENGINE — INSTALAÇÃO v1.0.0" "${BGDARK}${GOLD}"
-draw_line "═" "$GOLD" "$BGDARK"
-echo -e "${NC}"
+center_print "SOCIALPROOF — INTEGRAÇÃO PORTA 80" "$GOLD"
 
-require_cmd() { command -v "$1" >/dev/null 2>&1 || log_error "Comando ausente: $1"; }
-require_cmd curl
-require_cmd openssl
-
-# Detectar IP Público
-PUBLIC_IP=$(curl -s --max-time 3 https://api.ipify.org || hostname -I | awk '{print $1}')
-echo -e "  ${GREEN}[✔]${NC} IP Detectado: ${CYAN}${BOLD}${PUBLIC_IP}${NC}\n"
-
-# =============================================================================
-#  TELA 2: CONFIGURAÇÃO DE INPUTS
-# =============================================================================
-header "ETAPA 0 — CONFIGURAÇÃO DO SISTEMA"
-
-if [[ "$DETECTED_INSTALL" == true && -n "$DETECTED_DOMAIN" ]]; then
-    DOMAIN="$DETECTED_DOMAIN"
-    log_status "Domínio herdado: $DOMAIN"
-else
-    read -rp "  Deseja usar um domínio? [s/N]: " USE_DOMAIN
-    if [[ "$USE_DOMAIN" =~ ^[sS]$ ]]; then
-        read -rp "  Digite o domínio: " DOMAIN
-    else
-        DOMAIN="$PUBLIC_IP"
-    fi
-fi
-
-DB_NAME="socialproof"
-
-if [[ "$DETECTED_INSTALL" == true ]]; then
-    DB_USER="$DETECTED_DB_USER"
-    DB_PASS="$DETECTED_DB_PASS"
-else
-    read -rp "  Usuário MySQL [root]: " DB_USER; DB_USER=${DB_USER:-root}
-    read -rsp "  Senha MySQL (oculta): " DB_PASS; echo; DB_PASS=${DB_PASS:-root}
-fi
-
-# =============================================================================
-#  EXECUÇÃO DAS ETAPAS
-# =============================================================================
-header "ETAPA 1 — DEPENDÊNCIAS PHP"
+header "ETAPA 1 — DEPENDÊNCIAS (PHP)"
+# O install.sh instala Nginx e MariaDB. O install2.sh instala o PHP necessário para o Social Proof.
 apt-get update -qq
-apt-get install -y -qq php-fpm php-mysql php-mbstring php-gd php-json php-curl php-zip >/dev/null
+apt-get install -y -qq php-fpm php-mysql php-mbstring php-gd php-json php-curl php-zip unzip >/dev/null
 
 PHP_VERSION=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null || echo "8.1")
-PHP_FPM_SOCK="/var/run/php/php${PHP_VERSION}-fpm.sock"
+PHP_FPM_SOCK=$(find /run/php/ -name "php${PHP_VERSION}-fpm.sock" | head -1 || echo "/var/run/php/php${PHP_VERSION}-fpm.sock")
 
 systemctl enable "php${PHP_VERSION}-fpm" --quiet
 systemctl start  "php${PHP_VERSION}-fpm"
-log_status "PHP $PHP_VERSION configurado via $PHP_FPM_SOCK"
+log_status "PHP-FPM $PHP_VERSION ativo."
 
-header "ETAPA 2 — CONFIGURANDO MYSQL"
+header "ETAPA 2 — BANCO DE DADOS"
 mysql -u root <<SQL
-CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-GRANT ALL PRIVILEGES ON \`${DB_NAME}\`.* TO '${DB_USER}'@'localhost';
+CREATE DATABASE IF NOT EXISTS \`socialproof\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+GRANT ALL PRIVILEGES ON \`socialproof\`.* TO '${DB_USER}'@'localhost';
 FLUSH PRIVILEGES;
 SQL
-log_status "Banco '$DB_NAME' pronto."
+log_status "Banco 'socialproof' configurado."
 
-header "ETAPA 3 — MOVENDO ARQUIVOS PARA /VAR/WWW/HTML"
-mkdir -p "$INSTALL_DIR"
-rsync -a --delete "$TEMP_EXTRACT_DIR/" "$INSTALL_DIR/"
-chown -R "$APP_USER":"$APP_GROUP" "$INSTALL_DIR"
-log_status "Arquivos instalados em $INSTALL_DIR"
+header "ETAPA 3 — INSTALAÇÃO DOS ARQUIVOS"
+rsync -a "$TEMP_EXTRACT_DIR/" "$INSTALL_DIR/"
+chown -R www-data:www-data "$INSTALL_DIR"
+chmod -R 755 "$INSTALL_DIR"
+log_status "Arquivos movidos para $INSTALL_DIR"
 
-header "ETAPA 4 — GERANDO CONFIG.PHP"
+header "ETAPA 4 — CONFIGURAÇÃO DO ENGINE"
 mkdir -p "$INSTALL_DIR/includes"
 cat > "$INSTALL_DIR/includes/config.php" <<SPCONF
 <?php
-define('APP_VERSION', '2.0.0');
 define('DB_HOST', '127.0.0.1');
-define('DB_PORT', '3306');
-define('DB_NAME', '${DB_NAME}');
+define('DB_NAME', 'socialproof');
 define('DB_USER', '${DB_USER}');
 define('DB_PASS', '${DB_PASS}');
-date_default_timezone_set('America/Sao_Paulo');
-
-class DB {
-    private static \$instance = null;
-    public static function conn(): PDO {
-        if (self::\$instance === null) {
-            self::\$instance = new PDO('mysql:host='.DB_HOST.';dbname='.DB_NAME.';charset=utf8mb4', DB_USER, DB_PASS, [
-                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC
-            ]);
-        }
-        return self::\$instance;
-    }
-}
 SPCONF
+chown www-data:www-data "$INSTALL_DIR/includes/config.php"
 chmod 640 "$INSTALL_DIR/includes/config.php"
-log_status "Configurações de banco geradas."
 
-header "ETAPA 5 — IMPORTANDO SCHEMA"
+# Importar SQL se existir
 SP_SQL=$(find "$INSTALL_DIR" -name "*.sql" -print -quit)
 if [[ -n "$SP_SQL" ]]; then
-    mysql -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" < "$SP_SQL" 2>/dev/null || log_warn "Banco já populado."
-    log_status "Banco importado."
+    mysql -u "$DB_USER" -p"$DB_PASS" "socialproof" < "$SP_SQL" 2>/dev/null || log_warn "Aviso na importação do SQL."
 fi
 
-header "ETAPA 6 — CONFIGURANDO NGINX (INTEGRAÇÃO)"
-DIETA_NGINX="/etc/nginx/sites-available/dieta-milenar"
-
+header "ETAPA 5 — INTEGRAÇÃO NGINX (PORTA 80)"
 if [[ -f "$DIETA_NGINX" ]]; then
+    # Verifica se a regra já existe para não duplicar
     if ! grep -q "location ^~ /socialproof" "$DIETA_NGINX"; then
-        log_status "Integrando /socialproof ao Nginx existente..."
-        # Injeta o bloco PHP com alias apontando para /var/www/html/socialproof
+        log_status "Injetando regra SocialProof no Nginx da aplicação principal..."
+        
+        # Cria um arquivo temporário para a nova configuração
         sed -i "/location \/ {/i \
-    # ── SocialProof (PHP) ────────────────────────────\n\
+    # ── SocialProof Engine (PHP) ─────────────────────\n\
     location ^~ /socialproof {\n\
-        alias $INSTALL_DIR;\n\
+        alias $INSTALL_DIR/;\n\
         index index.php index.html;\n\
         try_files \$uri \$uri/ /socialproof/index.php\$is_args\$args;\n\
-        location ~ \.php$ {\n\
+\n\
+        location ~ ^/socialproof/(.+\\.php)$ {\n\
             include fastcgi_params;\n\
             fastcgi_pass unix:$PHP_FPM_SOCK;\n\
             fastcgi_param SCRIPT_FILENAME \$request_filename;\n\
         }\n\
     }\n" "$DIETA_NGINX"
+
         nginx -t && systemctl reload nginx
-        log_status "Integração concluída com sucesso."
+        log_status "Integração Nginx concluída com sucesso."
     else
-        log_status "Integração já presente no Nginx. Atualizando caminhos..."
-        # Garante que o alias esteja correto mesmo que já exista a regra
-        sed -i "s|alias .*/socialproof;|alias $INSTALL_DIR;|" "$DIETA_NGINX"
-        nginx -t && systemctl reload nginx
+        log_warn "Integração já detectada no Nginx. Ignorando injeção."
     fi
 else
-    log_warn "Arquivo Nginx do Dieta Milenar não encontrado. Criando config independente."
+    log_error "Arquivo Nginx do install.sh não encontrado em $DIETA_NGINX"
 fi
 
-# Ajustes Finais de Permissão
-chown -R www-data:www-data "$INSTALL_DIR"
-find "$INSTALL_DIR" -type d -exec chmod 755 {} \;
-find "$INSTALL_DIR" -type f -exec chmod 644 {} \;
-chmod 640 "$INSTALL_DIR/includes/config.php"
-
 # =============================================================================
-#  RESUMO FINAL (MANTIDO)
+#  RESUMO FINAL
 # =============================================================================
 clear
-echo -e "${BGDARK}${GOLD}${BOLD}"
-draw_line "═" "$GOLD" "$BGDARK"
-center_print "SOCIALPROOF — INSTALADO COM SUCESSO" "${BGDARK}${GOLD}"
-draw_line "═" "$GOLD" "$BGDARK"
-echo -e "${NC}"
-echo -e "  ${BOLD}URL do Widget:${NC}  http://${DOMAIN}/socialproof/widget/index.php"
-echo -e "  ${BOLD}Painel Admin:${NC}   http://${DOMAIN}/socialproof/"
-echo -e "  ${BOLD}Diretório:${NC}      $INSTALL_DIR"
-echo -e "  ${BOLD}Banco:${NC}          $DB_NAME"
-echo -e "  ${BOLD}Usuário DB:${NC}     $DB_USER"
-echo ""
-log_status "Instalação finalizada em $(date)"
+draw_line "═" "$GOLD"
+center_print "INSTALAÇÃO SOCIALPROOF CONCLUÍDA" "$GOLD"
+draw_line "═" "$GOLD"
+echo -e "  ${BOLD}Status:${NC}        Integrado à Porta 80"
+echo -e "  ${BOLD}URL Painel:${NC}    http://${DOMAIN}/socialproof/"
+echo -e "  ${BOLD}URL Widget:${NC}    http://${DOMAIN}/socialproof/widget/index.php"
+echo -e "  ${BOLD}Diretório:${NC}     $INSTALL_DIR"
+echo -e "  ${BOLD}Socket PHP:${NC}    $PHP_FPM_SOCK"
+draw_line "━" "$CYAN"
