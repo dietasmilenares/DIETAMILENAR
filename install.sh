@@ -528,7 +528,7 @@ log_status "Arquivo .env configurado."
 header "ETAPA 6 — CONFIGURANDO CHAT WIDGET"
 CHATW="$INSTALL_DIR/src/components/ChatWidget.tsx"
 if [[ -f "$CHATW" ]]; then
-  NEW_URL="http://${DOMAIN}/socialproof/widget/index.php?room=dieta-faraonica"
+  NEW_URL="$( [[ "$USE_SSL" == true ]] && echo "https" || echo "http" )://${DOMAIN}/socialproof/widget/index.php?room=dieta-faraonica"
   esc_from='https://socialproof-production\.up\.railway\.app/widget/index\.php\?room=dieta-faraonica'
   esc_to="$(printf '%s' "$NEW_URL" | sed -e 's/[\/&]/\\&/g')"
   sed -i -E "s#${esc_from}#${esc_to}#g" "$CHATW" || true
