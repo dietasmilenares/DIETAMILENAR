@@ -85,8 +85,8 @@ rm -rf "$TEMP_EXTRACT_DIR"
 mkdir -p "$TEMP_EXTRACT_DIR"
 unzip -q "$ZIP_FILE" -d "$TEMP_EXTRACT_DIR"
 
-PROJECT_SRC="$TEMP_EXTRACT_DIR/Projeto/DietaMilenar"
-SOCIALPROOF_SRC="$TEMP_EXTRACT_DIR/Projeto/SocialProof"
+PROJECT_SRC="$TEMP_EXTRACT_DIR/DietaMilenar"
+SOCIALPROOF_SRC="$TEMP_EXTRACT_DIR/SocialProof"
 
 [[ -d "$PROJECT_SRC" ]]    || log_error "DietaMilenar não encontrado dentro do ZIP (esperado: Projeto/DietaMilenar)"
 [[ -d "$SOCIALPROOF_SRC" ]] || log_warn "SocialProof não encontrado no ZIP (esperado: Projeto/SocialProof)"
