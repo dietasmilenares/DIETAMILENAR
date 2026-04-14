@@ -737,7 +737,7 @@ server {
 
     ${PMA_LOCATION}
 
-    location = /socialproof { return 301 \$scheme://\$host/socialproof/; }
+    location = /socialproof { return 301 https://\$host/socialproof/; }
     location ^~ /socialproof/ {
         root /var/www;
         index index.php index.html;
