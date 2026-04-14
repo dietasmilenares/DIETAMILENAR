@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-#  SaaS DIETA MILENAR — INSTALADOR OFICIAL v1.2.5 (PROD HARDENED - ZIP SEARCH)
+#  SaaS DIETA MILENAR — INSTALADOR OFICIAL v1.2.6 (PROD HARDENED - ZIP FIXED)
 #  Suporte: Ubuntu 20.04+ / Debian 11+ | Modo: Idempotente
 # =============================================================================
 
@@ -70,14 +70,14 @@ INSTALL_DIR="/var/www/dieta-milenar"
 SOCIALPROOF_DIR="/var/www/socialproof"
 export DEBIAN_FRONTEND=noninteractive
 
-# --- 6. BUSCA PELO PROJETO.ZIP ---
-log_status "Buscando arquivo 'projeto.zip' no sistema..."
-# Garante unzip disponível para a busca
-apt-get install -y -qq unzip >/dev/null 2>&1 || true
+# --- 6. EXTRAÇÃO DO PROJETO.ZIP ---
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+ZIP_FILE="$REPO_DIR/projeto.zip"
 
-ZIP_FILE=$(find /home/ubuntu -name "projeto.zip" -print -quit 2>/dev/null || true)
-[[ -n "$ZIP_FILE" ]] || log_error "Arquivo 'projeto.zip' não encontrado em /home/ubuntu"
-log_status "Arquivo encontrado em: $ZIP_FILE"
+[[ -f "$ZIP_FILE" ]] || log_error "Arquivo 'projeto.zip' não encontrado em $REPO_DIR"
+log_status "Arquivo encontrado: $ZIP_FILE"
+
+apt-get install -y -qq unzip >/dev/null 2>&1 || true
 
 TEMP_EXTRACT_DIR="/tmp/dieta-milenar-extract"
 log_status "Extraindo projeto.zip..."
@@ -85,19 +85,11 @@ rm -rf "$TEMP_EXTRACT_DIR"
 mkdir -p "$TEMP_EXTRACT_DIR"
 unzip -q "$ZIP_FILE" -d "$TEMP_EXTRACT_DIR"
 
-# Se o zip criou uma subpasta raiz, entra nela
-INNER=$(find "$TEMP_EXTRACT_DIR" -mindepth 1 -maxdepth 1 -type d | head -1)
-if [[ -n "$INNER" && ! -f "$TEMP_EXTRACT_DIR/package.json" ]]; then
-    PROJECT_SRC="$INNER"
-else
-    PROJECT_SRC="$TEMP_EXTRACT_DIR"
-fi
+PROJECT_SRC="$TEMP_EXTRACT_DIR/Projeto/DietaMilenar"
+SOCIALPROOF_SRC="$TEMP_EXTRACT_DIR/Projeto/SocialProof"
 
-# Detecta SocialProof dentro do zip (pasta opcional)
-SOCIALPROOF_SRC=""
-for candidate in "$TEMP_EXTRACT_DIR/SocialProof" "$TEMP_EXTRACT_DIR/socialproof" "$INNER/SocialProof" "$INNER/socialproof"; do
-    [[ -d "$candidate" ]] && { SOCIALPROOF_SRC="$candidate"; break; }
-done
+[[ -d "$PROJECT_SRC" ]]    || log_error "DietaMilenar não encontrado dentro do ZIP (esperado: Projeto/DietaMilenar)"
+[[ -d "$SOCIALPROOF_SRC" ]] || log_warn "SocialProof não encontrado no ZIP (esperado: Projeto/SocialProof)"
 
 # =============================================================================
 #  TELA 1: CHECKLIST INICIAL
@@ -105,7 +97,7 @@ done
 clear
 echo -e "${BGDARK}${GOLD}${BOLD}"
 draw_line "═" "$GOLD" "$BGDARK"
-center_print "DIETA MILENAR — INSTALAÇÃO v1.2.5" "${BGDARK}${GOLD}"
+center_print "DIETA MILENAR — INSTALAÇÃO v1.2.6" "${BGDARK}${GOLD}"
 draw_line "═" "$GOLD" "$BGDARK"
 echo -e "${NC}"
 
@@ -391,8 +383,8 @@ else
   log_status "phpMyAdmin ignorado."
 fi
 
-# --- ETAPA 4 ---
-header "ETAPA 4 — MOVENDO ARQUIVOS DO PROJETO"
+# --- ETAPA 4 — DIETA MILENAR ---
+header "ETAPA 4 — MOVENDO ARQUIVOS DO PROJETO (DIETA MILENAR)"
 install -d -m 0750 -o "$APP_USER" -g "$APP_GROUP" "$INSTALL_DIR"
 
 rsync -a --delete --exclude='node_modules' --exclude='.git' --exclude='dist' \
@@ -401,25 +393,6 @@ rsync -a --delete --exclude='node_modules' --exclude='.git' --exclude='dist' \
 chown -R "$APP_USER":"$APP_GROUP" "$INSTALL_DIR"
 chmod -R o-rwx "$INSTALL_DIR"
 
-if [[ -n "$SOCIALPROOF_SRC" && -d "$SOCIALPROOF_SRC" ]]; then
-    log_status "Instalando SocialProof..."
-    install -d -m 0750 -o www-data -g www-data "$SOCIALPROOF_DIR"
-    rsync -a --delete --exclude='.git' "$SOCIALPROOF_SRC/" "$SOCIALPROOF_DIR/"
-
-    install -d -m 0750 -o www-data -g www-data "$SOCIALPROOF_DIR/includes"
-    cat > "$SOCIALPROOF_DIR/includes/config.php" <<EOF
-<?php
-define('DB_HOST', '127.0.0.1');
-define('DB_NAME', 'socialproof');
-define('DB_USER', '$DB_USER');
-define('DB_PASS', '$DB_PASS');
-EOF
-    chown -R www-data:www-data "$SOCIALPROOF_DIR"
-    chmod -R o-rwx "$SOCIALPROOF_DIR"
-else
-    log_warn "Pasta SocialProof não encontrada no ZIP — pulando."
-fi
-
 install -d -m 0770 -o www-data -g "$APP_GROUP" \
   "$INSTALL_DIR/public/e-books" \
   "$INSTALL_DIR/public/proofs" \
@@ -427,7 +400,29 @@ install -d -m 0770 -o www-data -g "$APP_GROUP" \
   "$INSTALL_DIR/socialmembers"
 
 install -d -m 0750 -o "$APP_USER" -g "$APP_GROUP" /var/log/dieta-milenar
-log_status "Arquivos movidos."
+log_status "Dieta Milenar: arquivos movidos para $INSTALL_DIR"
+
+# --- ETAPA 4.5 — SOCIAL PROOF ---
+header "ETAPA 4.5 — MOVENDO ARQUIVOS DO SOCIAL PROOF"
+if [[ -d "$SOCIALPROOF_SRC" ]]; then
+    install -d -m 0750 -o www-data -g www-data "$SOCIALPROOF_DIR"
+    rsync -a --delete --exclude='.git' "$SOCIALPROOF_SRC/" "$SOCIALPROOF_DIR/"
+
+    install -d -m 0750 -o www-data -g www-data "$SOCIALPROOF_DIR/includes"
+    cat > "$SOCIALPROOF_DIR/includes/config.php" <<EOF
+<?php
+define('DB_HOST', '127.0.0.1');
+define('DB_PORT', '3306');
+define('DB_NAME', 'socialproof');
+define('DB_USER', '$DB_USER');
+define('DB_PASS', '$DB_PASS');
+EOF
+    chown -R www-data:www-data "$SOCIALPROOF_DIR"
+    chmod -R o-rwx "$SOCIALPROOF_DIR"
+    log_status "SocialProof: arquivos movidos para $SOCIALPROOF_DIR"
+else
+    log_warn "Pasta SocialProof não encontrada no ZIP — pulando."
+fi
 
 # --- ETAPA 5 ---
 header "ETAPA 5 — GERANDO .ENV"
@@ -457,7 +452,9 @@ if [[ -f "$CHATW" ]]; then
   esc_from='https://socialproof-production\.up\.railway\.app/widget/index\.php\?room=dieta-faraonica'
   esc_to="$(printf '%s' "$NEW_URL" | sed -e 's/[\/&]/\\&/g')"
   sed -i -E "s#${esc_from}#${esc_to}#g" "$CHATW" || true
-  log_status "Chat Widget configurado para: $NEW_URL"
+  log_status "ChatWidget configurado: $NEW_URL"
+else
+  log_warn "ChatWidget.tsx não encontrado em $CHATW"
 fi
 
 # --- ETAPA 7 ---
@@ -481,16 +478,29 @@ fi
 runuser -l "$APP_USER" -c "cd $INSTALL_DIR && npm prune --omit=dev --silent" || true
 log_status "Compilação concluída."
 
-# --- ETAPA 8 ---
+# --- ETAPA 8 — IMPORTANDO SQL ---
 header "ETAPA 8 — IMPORTANDO SQL"
-SQL_FILE="$(find "$INSTALL_DIR" -maxdepth 3 -type f -name "*.sql" ! -path "*/node_modules/*" ! -path "*/dist/*" | head -n 1)"
-if [[ -n "${SQL_FILE:-}" && -f "$SQL_FILE" ]]; then
+
+# Dieta Milenar: DataBaseFULL/DB_ATUAL.sql
+DM_SQL="$INSTALL_DIR/DataBaseFULL/DB_ATUAL.sql"
+if [[ -f "$DM_SQL" ]]; then
   export MYSQL_PWD="$DB_PASS"
-  mysql --protocol=tcp -h 127.0.0.1 -u "$DB_USER" "$DB_NAME" < "$SQL_FILE"
+  mysql --protocol=tcp -h 127.0.0.1 -u "$DB_USER" "$DB_NAME" < "$DM_SQL"
   unset MYSQL_PWD
-  log_status "Banco importado: $SQL_FILE"
+  log_status "Dieta Milenar SQL importado: $DM_SQL"
 else
-  log_warn "Nenhum .sql válido encontrado para importar."
+  log_warn "DB_ATUAL.sql não encontrado em $DM_SQL"
+fi
+
+# SocialProof: DataBaseFULL/Dieta-Faraonica-Data-Base-Completa_2.sql
+SP_SQL="$SOCIALPROOF_DIR/DataBaseFULL/Dieta-Faraonica-Data-Base-Completa_2.sql"
+if [[ -f "$SP_SQL" ]]; then
+  export MYSQL_PWD="$DB_PASS"
+  mysql --protocol=tcp -h 127.0.0.1 -u "$DB_USER" socialproof < "$SP_SQL"
+  unset MYSQL_PWD
+  log_status "SocialProof SQL importado: $SP_SQL"
+else
+  log_warn "SocialProof SQL não encontrado em $SP_SQL"
 fi
 
 # --- ETAPA 9 ---
@@ -509,7 +519,6 @@ header "ETAPA 10 — CONFIGURANDO PM2"
 install -d -m 0755 -o "$APP_USER" -g "$APP_GROUP" /var/log/dieta-milenar
 chown -R "$APP_USER":"$APP_GROUP" /var/log/dieta-milenar
 
-# Detecta script do servidor
 if [[ -f "$INSTALL_DIR/dist/server.js" ]]; then
     SERVER_SCRIPT="dist/server.js"
 elif [[ -f "$INSTALL_DIR/server.js" ]]; then
@@ -576,7 +585,7 @@ fi
 PMA_LOCATION=""
 if [[ "$INSTALL_PMA" =~ ^[sS]$ ]]; then
 PMA_LOCATION="
-    location ^~ /phpmyadmin/ {
+    location ^~ /phpmyadmin {
         root /var/www;
         index index.php index.html;
         allow ${ADMIN_IP};
@@ -774,6 +783,10 @@ rm -f /etc/nginx/sites-enabled/default
 nginx -t >/dev/null
 systemctl reload nginx 2>/dev/null || systemctl restart nginx
 log_status "Nginx configurado."
+
+# Limpeza do diretório temporário
+rm -rf "$TEMP_EXTRACT_DIR"
+log_status "Temporários removidos."
 
 # =============================================================================
 #  RESUMO FINAL
