@@ -72,15 +72,9 @@ export DEBIAN_FRONTEND=noninteractive
 
 # --- 6. EXTRAÇÃO DO PROJETO.ZIP ---
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-ZIP_FILE=""
-for z in "$REPO_DIR/Projeto.zip" "$REPO_DIR/projeto.zip"; do
-  if [[ -f "$z" ]]; then
-    ZIP_FILE="$z"
-    break
-  fi
-done
+ZIP_FILE="$REPO_DIR/projeto.zip"
 
-[[ -n "$ZIP_FILE" ]] || log_error "Arquivo 'Projeto.zip' ou 'projeto.zip' não encontrado em $REPO_DIR"
+[[ -f "$ZIP_FILE" ]] || log_error "Arquivo 'projeto.zip' não encontrado em $REPO_DIR"
 log_status "Arquivo encontrado: $ZIP_FILE"
 
 apt-get install -y -qq unzip >/dev/null 2>&1 || true
@@ -599,76 +593,6 @@ chmod -R 0775 "$INSTALL_DIR/public"
 chmod -R 0775 "$INSTALL_DIR/socialmembers"
 chown -R www-data:www-data /var/log/dieta-milenar 2>/dev/null || true
 log_status "Permissões configuradas."
-
-# --- ETAPA 9.1 ---
-header "ETAPA 9.1 — INSTALANDO MENU E COMANDO START"
-
-MENU_SRC=""
-for candidate in "$REPO_DIR/menu.sh" "$REPO_DIR/menuFULL.sh"; do
-  [[ -f "$candidate" ]] && MENU_SRC="$candidate" && break
-done
-
-if [[ -n "$MENU_SRC" ]]; then
-  install -m 0750 -o root -g root "$MENU_SRC" "$INSTALL_DIR/menu.sh"
-
-  cat > /usr/local/bin/start <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-MENU_PATH="/var/www/dieta-milenar/menu.sh"
-
-if [[ ! -f "$MENU_PATH" ]]; then
-  echo "Menu não encontrado: $MENU_PATH" >&2
-  exit 1
-fi
-
-if [[ ${EUID:-999} -ne 0 ]]; then
-  exec sudo bash "$MENU_PATH" "$@"
-fi
-
-exec bash "$MENU_PATH" "$@"
-EOF
-
-  chmod 0755 /usr/local/bin/start
-  chown root:root /usr/local/bin/start
-
-  ensure_start_alias() {
-    local user_name="$1"
-    local home_dir="$2"
-    local group_name="$3"
-
-    [[ -d "$home_dir" ]] || return 0
-
-    local bashrc="${home_dir}/.bashrc"
-    local profile="${home_dir}/.profile"
-
-    touch "$bashrc" "$profile"
-    chown "$user_name:$group_name" "$bashrc" "$profile"
-    chmod 0644 "$bashrc" "$profile"
-
-    for rc in "$bashrc" "$profile"; do
-      if ! grep -q 'START_ALIAS_DIETA_MILENAR' "$rc" 2>/dev/null; then
-        cat >> "$rc" <<'EOF'
-
-# START_ALIAS_DIETA_MILENAR
-alias start='/usr/local/bin/start'
-# END_START_ALIAS_DIETA_MILENAR
-EOF
-      fi
-    done
-  }
-
-  ensure_start_alias root /root root
-
-  if id ubuntu >/dev/null 2>&1; then
-    ensure_start_alias ubuntu /home/ubuntu ubuntu
-  fi
-
-  log_status "Menu instalado em $INSTALL_DIR/menu.sh"
-  log_status "Comando 'start' criado em /usr/local/bin/start"
-else
-  log_warn "menu.sh/menuFULL.sh não encontrado em $REPO_DIR. Instalação seguirá sem o comando 'start'."
-fi
 
 # --- ETAPA 10 ---
 header "ETAPA 10 — CONFIGURANDO PM2"
