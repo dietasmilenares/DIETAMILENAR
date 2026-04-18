@@ -1,14 +1,5 @@
 # Dieta Milenar + SocialProof
 
-
-```
-rm -rf /home/ubuntu/Dieta-Milenar && \
-git clone https://github.com/dietasmilenares/DIETAMILENAR /home/ubuntu/Dieta-Milenar && \
-chmod +x /home/ubuntu/Dieta-Milenar/init.sh && \
-sudo bash /home/ubuntu/Dieta-Milenar/init.sh
-```
-
-
 Plataforma completa para venda de infoprodutos com área pública de conversão, checkout, área de membros, painel administrativo, módulo de revenda/afiliados e engine de Social Proof com widget embutível.
 
 Este pacote reúne dois produtos integrados:
