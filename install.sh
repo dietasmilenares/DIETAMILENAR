@@ -608,10 +608,11 @@ for candidate in "$REPO_DIR/menu.sh" "$REPO_DIR/menuFULL.sh"; do
   [[ -f "$candidate" ]] && MENU_SRC="$candidate" && break
 done
 
-if [[ -n "$MENU_SRC" ]]; then
-  install -m 0750 -o root -g root "$MENU_SRC" "$INSTALL_DIR/menu.sh"
+[[ -n "$MENU_SRC" ]] || log_error "menu.sh/menuFULL.sh não encontrado em $REPO_DIR. Instalação não pode seguir sem o menu."
 
-  cat > /usr/local/bin/start <<'EOF'
+install -m 0750 -o root -g root "$MENU_SRC" "$INSTALL_DIR/menu.sh"
+
+cat > /usr/local/bin/start <<'''EOF'''
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -629,46 +630,52 @@ fi
 exec bash "$MENU_PATH" "$@"
 EOF
 
-  chmod 0755 /usr/local/bin/start
-  chown root:root /usr/local/bin/start
+chmod 0755 /usr/local/bin/start
+chown root:root /usr/local/bin/start
 
-  ensure_start_alias() {
-    local user_name="$1"
-    local home_dir="$2"
-    local group_name="$3"
+cat > /etc/profile.d/dieta-milenar-start.sh <<'''EOF'''
+alias start='/usr/local/bin/start'
+EOF
+chmod 0644 /etc/profile.d/dieta-milenar-start.sh
+chown root:root /etc/profile.d/dieta-milenar-start.sh
 
-    [[ -d "$home_dir" ]] || return 0
+ensure_start_alias() {
+  local user_name="$1"
+  local home_dir="$2"
+  local group_name="$3"
 
-    local bashrc="${home_dir}/.bashrc"
-    local profile="${home_dir}/.profile"
+  [[ -d "$home_dir" ]] || return 0
 
-    touch "$bashrc" "$profile"
-    chown "$user_name:$group_name" "$bashrc" "$profile"
-    chmod 0644 "$bashrc" "$profile"
+  local bashrc="${home_dir}/.bashrc"
+  local profile="${home_dir}/.profile"
 
-    for rc in "$bashrc" "$profile"; do
-      if ! grep -q 'START_ALIAS_DIETA_MILENAR' "$rc" 2>/dev/null; then
-        cat >> "$rc" <<'EOF'
+  touch "$bashrc" "$profile"
+  chown "$user_name:$group_name" "$bashrc" "$profile"
+  chmod 0644 "$bashrc" "$profile"
+
+  for rc in "$bashrc" "$profile"; do
+    if ! grep -q 'START_ALIAS_DIETA_MILENAR' "$rc" 2>/dev/null; then
+      cat >> "$rc" <<'''EOF'''
 
 # START_ALIAS_DIETA_MILENAR
 alias start='/usr/local/bin/start'
 # END_START_ALIAS_DIETA_MILENAR
 EOF
-      fi
-    done
-  }
+    fi
+  done
+}
 
-  ensure_start_alias root /root root
+ensure_start_alias root /root root
 
-  if id ubuntu >/dev/null 2>&1; then
-    ensure_start_alias ubuntu /home/ubuntu ubuntu
-  fi
-
-  log_status "Menu instalado em $INSTALL_DIR/menu.sh"
-  log_status "Comando 'start' criado em /usr/local/bin/start"
-else
-  log_warn "menu.sh/menuFULL.sh não encontrado em $REPO_DIR. Instalação seguirá sem o comando 'start'."
+if id ubuntu >/dev/null 2>&1; then
+  ensure_start_alias ubuntu /home/ubuntu ubuntu
 fi
+
+[[ -f "$INSTALL_DIR/menu.sh" ]] || log_error "Falha ao instalar o menu em $INSTALL_DIR/menu.sh"
+[[ -x /usr/local/bin/start ]] || log_error "Falha ao criar o comando /usr/local/bin/start"
+
+log_status "Menu instalado em $INSTALL_DIR/menu.sh"
+log_status "Comando 'start' criado em /usr/local/bin/start"
 
 # --- ETAPA 10 ---
 header "ETAPA 10 — CONFIGURANDO PM2"
