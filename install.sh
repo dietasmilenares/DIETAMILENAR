@@ -603,12 +603,9 @@ log_status "Permissões configuradas."
 # --- ETAPA 9.1 ---
 header "ETAPA 9.1 — INSTALANDO MENU E COMANDO START"
 
-MENU_SRC=""
-for candidate in "$REPO_DIR/menu.sh" "$REPO_DIR/menuFULL.sh"; do
-  [[ -f "$candidate" ]] && MENU_SRC="$candidate" && break
-done
+MENU_SRC="$REPO_DIR/menu.sh"
 
-if [[ -n "$MENU_SRC" ]]; then
+if [[ -f "$MENU_SRC" ]]; then
   install -m 0750 -o root -g root "$MENU_SRC" "$INSTALL_DIR/menu.sh"
 
   cat > /usr/local/bin/start <<'EOF'
@@ -667,7 +664,7 @@ EOF
   log_status "Menu instalado em $INSTALL_DIR/menu.sh"
   log_status "Comando 'start' criado em /usr/local/bin/start"
 else
-  log_warn "menu.sh/menuFULL.sh não encontrado em $REPO_DIR. Instalação seguirá sem o comando 'start'."
+  log_warn "menu.sh não encontrado em $REPO_DIR. Instalação seguirá sem o comando 'start'."
 fi
 
 # --- ETAPA 10 ---
