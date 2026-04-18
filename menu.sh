@@ -1,17 +1,12 @@
 #!/usr/bin/env bash
 # =============================================================================
 # DIETA MILENAR — MENU OPERACIONAL UNIFICADO (Ubuntu 22.04+)
-# Coerente com:
-#   - instalador oficial (install.sh)
-#   - menu.sh / menu2.sh
-#   - conteúdo do Projeto.zip
 # =============================================================================
 
 set -Eeuo pipefail
 IFS=$'\n\t'
 : "${TERM:=xterm}"
 
-# --- identidade da instalação ---
 APP_NAME="Dieta Milenar"
 APP_SLUG="dieta-milenar"
 APP_USER="dieta"
@@ -27,8 +22,12 @@ APP_PM2_NAME="dieta-milenar"
 PM2_LOG_DIR="${APP_HOME}/.pm2/logs"
 BACKUP_DIR="/root/backups/dieta-milenar"
 DEFAULT_PORT="3000"
+DEFAULT_REPO_DIR="/home/ubuntu/Dieta-Milenar"
+ALT_REPO_DIR="/opt/dieta-milenar"
+GIT_REPO_URL="https://github.com/dietasmilenares/DIETAMILENAR"
+TEMP_GIT_CLONE="/tmp/dieta-milenar-git-update"
+TEMP_ZIP_EXTRACT="/tmp/dieta-milenar-update-extract"
 
-# --- terminal ---
 TERM_WIDTH=$(tput cols 2>/dev/null || echo 100)
 (( TERM_WIDTH < 80 )) && TERM_WIDTH=80
 
@@ -45,13 +44,17 @@ C_WHITE='\033[1;37m'
 C_GOLD='\033[38;5;220m'
 C_BG='\033[48;5;235m'
 
-# --- guards ---
-[[ ${EUID:-999} -eq 0 ]] || {
-  echo -e "${C_RED}Execute como root:${C_RESET} sudo bash $0"
-  exit 1
-}
+if [[ ${EUID:-999} -ne 0 ]]; then
+  command -v sudo >/dev/null 2>&1 || {
+    echo -e "${C_RED}Execute como root ou com sudo disponível.${C_RESET}"
+    exit 1
+  }
+  sudo -n true >/dev/null 2>&1 || {
+    echo -e "${C_RED}Execute com sudo sem prompt ou use root:${C_RESET} sudo bash $0"
+    exit 1
+  }
+fi
 
-# --- helpers base ---
 trim() {
   local s="$*"
   s="${s#${s%%[![:space:]]*}}"
@@ -112,12 +115,66 @@ ask_option() {
 
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
-run_as_app() {
-  local cmd="$1"
-  runuser -l "$APP_USER" -c "$cmd"
+run_priv() {
+  if command -v sudo >/dev/null 2>&1; then
+    sudo "$@"
+  else
+    "$@"
+  fi
 }
 
-# --- detecção coerente com install.sh / Ubuntu 22 ---
+run_priv_shell() {
+  local cmd="$1"
+  if command -v sudo >/dev/null 2>&1; then
+    sudo bash -lc "$cmd"
+  else
+    bash -lc "$cmd"
+  fi
+}
+
+run_as_app() {
+  local cmd="$1"
+  run_priv runuser -l "$APP_USER" -c "$cmd"
+}
+
+resolve_repo_dir() {
+  REPO_DIR=""
+  for candidate in "$DEFAULT_REPO_DIR" "$ALT_REPO_DIR"; do
+    if [[ -f "$candidate/install.sh" ]]; then
+      REPO_DIR="$candidate"
+      break
+    fi
+  done
+
+  if [[ -z "$REPO_DIR" ]]; then
+    for candidate in "$(pwd)" "$(dirname "$0")"; do
+      if [[ -f "$candidate/install.sh" ]]; then
+        REPO_DIR="$(cd "$candidate" && pwd -P)"
+        break
+      fi
+    done
+  fi
+
+  INSTALL_SH_PATH="${REPO_DIR:+$REPO_DIR/install.sh}"
+  UNINSTALL_SH_PATH="${REPO_DIR:+$REPO_DIR/unistall.sh}"
+  MENU_REPO_PATH="${REPO_DIR:+$REPO_DIR/menu.sh}"
+}
+
+ensure_repo_dir() {
+  resolve_repo_dir
+  [[ -n "${REPO_DIR:-}" && -d "$REPO_DIR" ]] || {
+    fail "Repositório não encontrado."
+    return 1
+  }
+}
+
+ensure_repo_scripts_permissions() {
+  ensure_repo_dir || return 1
+  [[ -f "$INSTALL_SH_PATH" ]] && run_priv chmod +x "$INSTALL_SH_PATH"
+  [[ -f "$UNINSTALL_SH_PATH" ]] && run_priv chmod +x "$UNINSTALL_SH_PATH"
+  [[ -f "$MENU_REPO_PATH" ]] && run_priv chmod +x "$MENU_REPO_PATH"
+}
+
 resolve_pm2_bin() {
   PM2_BIN="$(command -v pm2 || true)"
   [[ -n "${PM2_BIN:-}" ]] || PM2_BIN="$(find /usr/lib/node_modules/pm2/bin /usr/local/lib/node_modules/pm2/bin -type f -name pm2 2>/dev/null | head -1 || true)"
@@ -142,10 +199,8 @@ resolve_mariadb_service() {
 resolve_php_fpm() {
   PHP_FPM_SERVICE=""
   PHP_FPM_SOCKET=""
-
   PHP_FPM_SOCKET="$(find /run/php /var/run/php -maxdepth 1 -type s -name 'php*-fpm.sock' 2>/dev/null | sort -V | tail -1 || true)"
   PHP_FPM_SERVICE="$(systemctl list-unit-files --type=service --no-legend 2>/dev/null | awk '/^php[0-9.]+-fpm\.service/ {print $1}' | sort -V | tail -1 | sed 's/\.service$//' || true)"
-
   if [[ -z "$PHP_FPM_SERVICE" && -n "$PHP_FPM_SOCKET" ]]; then
     PHP_FPM_SERVICE="$(basename "$PHP_FPM_SOCKET" .sock)"
   fi
@@ -169,7 +224,6 @@ load_app_env() {
   DB_USER="dieta_user"
   DB_PASS=""
   NODE_ENV_VALUE="production"
-  STRIPE_SECRET=""
 
   if [[ -f "$APP_ENV_FILE" ]]; then
     APP_PORT="$(awk -F= '/^PORT=/{print substr($0, index($0,$2))}' "$APP_ENV_FILE" | tail -1)"
@@ -179,7 +233,6 @@ load_app_env() {
     DB_USER="$(awk -F= '/^DB_USER=/{print substr($0, index($0,$2))}' "$APP_ENV_FILE" | tail -1)"
     DB_PASS="$(awk -F= '/^DB_PASS=/{print substr($0, index($0,$2))}' "$APP_ENV_FILE" | tail -1)"
     NODE_ENV_VALUE="$(awk -F= '/^NODE_ENV=/{print substr($0, index($0,$2))}' "$APP_ENV_FILE" | tail -1)"
-    STRIPE_SECRET="$(awk -F= '/^STRIPE_SECRET_KEY=/{print substr($0, index($0,$2))}' "$APP_ENV_FILE" | tail -1)"
   fi
 
   APP_PORT="$(trim "${APP_PORT:-$DEFAULT_PORT}")"
@@ -226,7 +279,7 @@ ensure_ecosystem_file() {
     server_script="server.js"
   fi
 
-  cat > "$INSTALL_DIR/ecosystem.config.cjs" <<EOCFG
+  run_priv_shell "cat > '$INSTALL_DIR/ecosystem.config.cjs' <<'EOCFG'
 module.exports = {
   apps: [{
     name: '${APP_PM2_NAME}',
@@ -243,23 +296,63 @@ module.exports = {
     log_date_format: 'YYYY-MM-DD HH:mm:ss'
   }]
 };
-EOCFG
-  chown "$APP_USER:$APP_GROUP" "$INSTALL_DIR/ecosystem.config.cjs"
+EOCFG"
+  run_priv chown "$APP_USER:$APP_GROUP" "$INSTALL_DIR/ecosystem.config.cjs"
 }
 
 replace_or_append_env_var() {
   local file="$1" key="$2" value="$3"
   if grep -qE "^${key}=" "$file" 2>/dev/null; then
-    sed -i -E "s|^${key}=.*|${key}=${value}|" "$file"
+    run_priv sed -i -E "s|^${key}=.*|${key}=${value}|" "$file"
   else
-    printf '\n%s=%s\n' "$key" "$value" >> "$file"
+    run_priv_shell "printf '\n%s=%s\n' '$key' '$value' >> '$file'"
   fi
+}
+
+stop_stack_services() {
+  section "DEPLOY — PARANDO STACK"
+  resolve_pm2_bin
+  resolve_mariadb_service
+  resolve_php_fpm
+
+  run_as_app "$PM2_BIN stop '$APP_PM2_NAME' >/dev/null 2>&1 || true"
+  run_as_app "$PM2_BIN delete '$APP_PM2_NAME' >/dev/null 2>&1 || true"
+  run_as_app "$PM2_BIN save --silent >/dev/null 2>&1 || true"
+
+  [[ -n "${PHP_FPM_SERVICE:-}" ]] && run_priv systemctl stop "$PHP_FPM_SERVICE" >/dev/null 2>&1 || true
+  [[ -n "${DB_SERVICE:-}" ]] && run_priv systemctl stop "$DB_SERVICE" >/dev/null 2>&1 || true
+  run_priv systemctl stop nginx >/dev/null 2>&1 || true
+
+  success "Processos da stack parados."
+}
+
+start_stack_services() {
+  section "DEPLOY — INICIALIZANDO STACK"
+  resolve_pm2_bin
+  resolve_mariadb_service
+  resolve_php_fpm
+  load_app_env
+
+  [[ -n "${DB_SERVICE:-}" ]] && run_priv systemctl start "$DB_SERVICE" >/dev/null 2>&1 || true
+  [[ -n "${PHP_FPM_SERVICE:-}" ]] && run_priv systemctl start "$PHP_FPM_SERVICE" >/dev/null 2>&1 || true
+  run_priv systemctl start nginx >/dev/null 2>&1 || true
+
+  if [[ -d "$INSTALL_DIR" ]]; then
+    if [[ ! -f "$INSTALL_DIR/ecosystem.config.cjs" ]]; then
+      ensure_ecosystem_file
+    fi
+    if [[ -f "$INSTALL_DIR/ecosystem.config.cjs" ]]; then
+      run_as_app "$PM2_BIN start '$INSTALL_DIR/ecosystem.config.cjs' --env production >/dev/null 2>&1 || true"
+      run_as_app "$PM2_BIN save --silent >/dev/null 2>&1 || true"
+    fi
+  fi
+
+  success "Inicialização concluída."
 }
 
 restart_pm2_current_mode() {
   local mode
   mode="$(get_current_mode)"
-
   run_as_app "$PM2_BIN delete $APP_PM2_NAME >/dev/null 2>&1 || true"
 
   if [[ "$mode" == "development" ]]; then
@@ -275,43 +368,142 @@ restart_pm2_current_mode() {
   run_as_app "'$PM2_BIN' save --silent" >/dev/null 2>&1 || true
 }
 
+deploy_install() {
+  stop_stack_services
+  ensure_repo_scripts_permissions || return 1
+  [[ -f "$INSTALL_SH_PATH" ]] || { fail "install.sh não encontrado."; pause; return; }
+  info "Executando install.sh"
+  run_priv bash "$INSTALL_SH_PATH"
+}
+
+deploy_remove() {
+  stop_stack_services
+  ensure_repo_scripts_permissions || return 1
+  [[ -f "$UNINSTALL_SH_PATH" ]] || { fail "unistall.sh não encontrado."; pause; return; }
+  info "Executando unistall.sh"
+  run_priv bash "$UNINSTALL_SH_PATH" --yes
+}
+
+deploy_update() {
+  stop_stack_services
+  ensure_repo_dir || return 1
+
+  section "DEPLOY — UPDATE"
+
+  info "Instalando dependências do update"
+  run_priv apt-get update -qq
+  run_priv apt-get install -y -qq git rsync unzip >/dev/null
+
+  info "Clonando repositório do GitHub"
+  run_priv rm -rf "$TEMP_GIT_CLONE"
+  run_priv git clone "$GIT_REPO_URL" "$TEMP_GIT_CLONE" >/dev/null
+
+  info "Sincronizando repositório local"
+  run_priv rsync -a --delete --exclude='.git' "$TEMP_GIT_CLONE/" "$REPO_DIR/"
+
+  local zip_file=""
+  for z in "$REPO_DIR/Projeto.zip" "$REPO_DIR/projeto.zip"; do
+    if [[ -f "$z" ]]; then
+      zip_file="$z"
+      break
+    fi
+  done
+  [[ -n "$zip_file" ]] || { fail "Projeto.zip/projeto.zip não encontrado após update."; pause; return; }
+
+  info "Extraindo pacote atualizado"
+  run_priv rm -rf "$TEMP_ZIP_EXTRACT"
+  run_priv mkdir -p "$TEMP_ZIP_EXTRACT"
+  run_priv unzip -q "$zip_file" -d "$TEMP_ZIP_EXTRACT"
+
+  local project_src="$TEMP_ZIP_EXTRACT/DietaMilenar"
+  local socialproof_src="$TEMP_ZIP_EXTRACT/SocialProof"
+
+  [[ -d "$project_src" ]] || { fail "DietaMilenar não encontrado no ZIP atualizado."; pause; return; }
+
+  info "Sincronizando aplicação final"
+  run_priv rsync -a --delete --exclude='node_modules' --exclude='dist' --exclude='.git' "$project_src/" "$INSTALL_DIR/"
+
+  if [[ -d "$socialproof_src" ]]; then
+    info "Sincronizando SocialProof"
+    run_priv mkdir -p "$SOCIALPROOF_DIR"
+    run_priv rsync -a --delete --exclude='.git' "$socialproof_src/" "$SOCIALPROOF_DIR/"
+  fi
+
+  if [[ -f "$REPO_DIR/menu.sh" ]]; then
+    info "Atualizando menu instalado"
+    run_priv install -m 0750 -o root -g root "$REPO_DIR/menu.sh" "$INSTALL_DIR/menu.sh"
+  fi
+
+  run_priv chown -R "$APP_USER:$APP_GROUP" "$INSTALL_DIR"
+  [[ -d "$INSTALL_DIR/public" ]] && run_priv chown -R www-data:www-data "$INSTALL_DIR/public"
+  [[ -d "$INSTALL_DIR/socialmembers" ]] && run_priv chown -R www-data:www-data "$INSTALL_DIR/socialmembers"
+
+  if [[ ! -d "$APP_HOME/.npm" ]]; then
+    run_priv mkdir -p "$APP_HOME/.npm"
+    run_priv chown -R "$APP_USER:$APP_GROUP" "$APP_HOME"
+  fi
+
+  info "Executando build"
+  cd "$INSTALL_DIR"
+  if [[ -f package-lock.json ]]; then
+    run_as_app "cd '$INSTALL_DIR' && npm ci --silent --cache '$APP_HOME/.npm'"
+  else
+    run_as_app "cd '$INSTALL_DIR' && npm install --silent --cache '$APP_HOME/.npm'"
+  fi
+  run_as_app "cd '$INSTALL_DIR' && npm run build --silent"
+  build_server_if_needed
+  run_as_app "cd '$INSTALL_DIR' && npm prune --omit=dev --silent" || true
+
+  start_stack_services
+
+  run_priv rm -rf "$TEMP_GIT_CLONE" "$TEMP_ZIP_EXTRACT"
+  success "Update concluído."
+  pause
+}
+
+deploy_initialize() {
+  stop_stack_services
+  start_stack_services
+  pause
+}
+
 apply_permissions_fix() {
   section "FIX — REAPLICANDO PERMISSÕES"
 
-  install -d -m 0750 -o "$APP_USER" -g "$APP_GROUP" "$INSTALL_DIR"
-  install -d -m 0755 -o "$APP_USER" -g "$APP_GROUP" /var/log/dieta-milenar
+  run_priv install -d -m 0750 -o "$APP_USER" -g "$APP_GROUP" "$INSTALL_DIR"
+  run_priv install -d -m 0755 -o "$APP_USER" -g "$APP_GROUP" /var/log/dieta-milenar
 
   if id -u "$APP_USER" >/dev/null 2>&1; then
-    usermod -aG "$APP_GROUP" www-data >/dev/null 2>&1 || true
-    chown -R "$APP_USER:$APP_GROUP" "$INSTALL_DIR"
+    run_priv usermod -aG "$APP_GROUP" www-data >/dev/null 2>&1 || true
+    run_priv chown -R "$APP_USER:$APP_GROUP" "$INSTALL_DIR"
   fi
 
   if [[ -d "$INSTALL_DIR/public" ]]; then
-    chown -R www-data:www-data "$INSTALL_DIR/public"
-    find "$INSTALL_DIR/public" -type d -exec chmod 0775 {} +
-    find "$INSTALL_DIR/public" -type f -exec chmod 0664 {} +
+    run_priv chown -R www-data:www-data "$INSTALL_DIR/public"
+    run_priv find "$INSTALL_DIR/public" -type d -exec chmod 0775 {} +
+    run_priv find "$INSTALL_DIR/public" -type f -exec chmod 0664 {} +
     success "Permissões de public/ corrigidas."
   else
     warn "Diretório public/ não encontrado."
   fi
 
   if [[ -d "$INSTALL_DIR/socialmembers" ]]; then
-    chown -R www-data:www-data "$INSTALL_DIR/socialmembers"
-    find "$INSTALL_DIR/socialmembers" -type d -exec chmod 0775 {} +
-    find "$INSTALL_DIR/socialmembers" -type f -exec chmod 0664 {} +
+    run_priv chown -R www-data:www-data "$INSTALL_DIR/socialmembers"
+    run_priv find "$INSTALL_DIR/socialmembers" -type d -exec chmod 0775 {} +
+    run_priv find "$INSTALL_DIR/socialmembers" -type f -exec chmod 0664 {} +
     success "Permissões de socialmembers/ corrigidas."
   fi
 
   if [[ -f "$APP_ENV_FILE" ]]; then
-    chown "$APP_USER:$APP_GROUP" "$APP_ENV_FILE"
-    chmod 0640 "$APP_ENV_FILE"
+    run_priv chown "$APP_USER:$APP_GROUP" "$APP_ENV_FILE"
+    run_priv chmod 0640 "$APP_ENV_FILE"
     success "Permissões do .env corrigidas."
   fi
 
   if [[ -d /var/log/dieta-milenar ]]; then
-    chown -R "$APP_USER:$APP_GROUP" /var/log/dieta-milenar
-    find /var/log/dieta-milenar -type d -exec chmod 0755 {} +
-    find /var/log/dieta-milenar -type f -exec chmod 0644 {} +
+    run_priv chown -R "$APP_USER:$APP_GROUP" /var/log/dieta-milenar
+    run_priv find /var/log/dieta-milenar -type d -exec chmod 0755 {} +
+    run_priv find /var/log/dieta-milenar -type f -exec chmod 0644 {} +
     success "Permissões de logs corrigidas."
   fi
 
@@ -325,7 +517,7 @@ service_state_label() {
     printf '%bN/D%b' "$C_YELLOW" "$C_RESET"
     return
   fi
-  if systemctl is-active --quiet "$unit" 2>/dev/null; then
+  if run_priv systemctl is-active --quiet "$unit" 2>/dev/null; then
     printf '%bonline%b' "$C_GREEN" "$C_RESET"
   else
     printf '%boffline%b' "$C_RED" "$C_RESET"
@@ -369,8 +561,8 @@ menu_fix() {
 }
 
 restart_nginx_safe() {
-  if nginx -t >/dev/null 2>&1; then
-    systemctl reload nginx 2>/dev/null || systemctl restart nginx
+  if run_priv nginx -t >/dev/null 2>&1; then
+    run_priv systemctl reload nginx 2>/dev/null || run_priv systemctl restart nginx
     success "Nginx recarregado."
   else
     fail "nginx -t falhou. Corrija a configuração antes de reiniciar."
@@ -441,8 +633,8 @@ menu_servicos() {
         section "REINICIAR TUDO"
         resolve_php_fpm
         resolve_mariadb_service
-        systemctl restart "$DB_SERVICE" 2>/dev/null || true
-        [[ -n "$PHP_FPM_SERVICE" ]] && systemctl restart "$PHP_FPM_SERVICE" 2>/dev/null || true
+        run_priv systemctl restart "$DB_SERVICE" 2>/dev/null || true
+        [[ -n "$PHP_FPM_SERVICE" ]] && run_priv systemctl restart "$PHP_FPM_SERVICE" 2>/dev/null || true
         restart_nginx_safe
         restart_pm2_safe || true
         pause
@@ -460,7 +652,7 @@ menu_servicos() {
       5)
         section "REINICIAR MARIADB"
         resolve_mariadb_service
-        if systemctl restart "$DB_SERVICE"; then
+        if run_priv systemctl restart "$DB_SERVICE"; then
           success "${DB_SERVICE} reiniciado."
         else
           fail "Falha ao reiniciar ${DB_SERVICE}."
@@ -529,7 +721,7 @@ open_database_shell() {
 
   echo
   info "Abrindo shell SQL para ${DB_NAME} em ${DB_HOST}:${DB_PORT}..."
-  MYSQL_PWD="$DB_PASS" "$DB_CLIENT_BIN" --protocol=tcp -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" "$DB_NAME"
+  MYSQL_PWD="$DB_PASS" run_priv "$DB_CLIENT_BIN" --protocol=tcp -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" "$DB_NAME"
 }
 
 backup_database() {
@@ -538,12 +730,12 @@ backup_database() {
 
   [[ -n "$DB_DUMP_BIN" ]] || { fail "Ferramenta de dump não encontrada."; pause; return; }
 
-  install -d -m 0700 "$BACKUP_DIR"
+  run_priv install -d -m 0700 "$BACKUP_DIR"
   local outfile="$BACKUP_DIR/${DB_NAME}_$(date +%Y%m%d_%H%M%S).sql"
 
   info "Gerando backup..."
-  if MYSQL_PWD="$DB_PASS" "$DB_DUMP_BIN" --protocol=tcp -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" "$DB_NAME" > "$outfile"; then
-    chmod 0600 "$outfile"
+  if MYSQL_PWD="$DB_PASS" run_priv "$DB_DUMP_BIN" --protocol=tcp -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" "$DB_NAME" > "$outfile"; then
+    run_priv chmod 0600 "$outfile"
     success "Backup salvo em: $outfile"
   else
     rm -f "$outfile"
@@ -627,6 +819,28 @@ menu_diagnostico() {
   done
 }
 
+menu_deploy() {
+  while true; do
+    box_title
+    section "DEPLOY"
+    echo -e "  ${C_BOLD}[1]${C_RESET} Instalar"
+    echo -e "  ${C_BOLD}[2]${C_RESET} Remover"
+    echo -e "  ${C_BOLD}[3]${C_RESET} Update"
+    echo -e "  ${C_BOLD}[4]${C_RESET} Inicializar Sistema"
+    echo -e "  ${C_BOLD}[0]${C_RESET} Voltar"
+    echo
+    ask_option
+    case "$MENU_OPT" in
+      1) deploy_install ;;
+      2) deploy_remove ;;
+      3) deploy_update ;;
+      4) deploy_initialize ;;
+      0) break ;;
+      *) warn "Opção inválida."; pause ;;
+    esac
+  done
+}
+
 toggle_mode() {
   section "ALTERAR MODE"
   load_app_env
@@ -634,7 +848,7 @@ toggle_mode() {
 
   [[ -d "$INSTALL_DIR" ]] || { fail "Diretório da aplicação não encontrado: $INSTALL_DIR"; pause; return; }
   [[ -f "$APP_ENV_FILE" ]] || { fail "Arquivo .env não encontrado em $APP_ENV_FILE"; pause; return; }
-  [[ -d "$APP_HOME" ]] || install -d -m 0755 -o "$APP_USER" -g "$APP_GROUP" "$APP_HOME"
+  [[ -d "$APP_HOME" ]] || run_priv install -d -m 0755 -o "$APP_USER" -g "$APP_GROUP" "$APP_HOME"
 
   local current_mode="$(get_current_mode)"
 
@@ -642,22 +856,22 @@ toggle_mode() {
   echo
 
   if [[ "$current_mode" == "production" ]]; then
-    cp "$APP_ENV_FILE" "$APP_ENV_PROD"
-    chown "$APP_USER:$APP_GROUP" "$APP_ENV_PROD"
-    chmod 0640 "$APP_ENV_PROD"
+    run_priv cp "$APP_ENV_FILE" "$APP_ENV_PROD"
+    run_priv chown "$APP_USER:$APP_GROUP" "$APP_ENV_PROD"
+    run_priv chmod 0640 "$APP_ENV_PROD"
     success "Snapshot salvo: .env.production"
 
     if [[ -f "$APP_ENV_DEV" ]]; then
-      cp "$APP_ENV_DEV" "$APP_ENV_FILE"
+      run_priv cp "$APP_ENV_DEV" "$APP_ENV_FILE"
       success ".env.development restaurado."
     else
-      cp "$APP_ENV_PROD" "$APP_ENV_FILE"
+      run_priv cp "$APP_ENV_PROD" "$APP_ENV_FILE"
       replace_or_append_env_var "$APP_ENV_FILE" NODE_ENV development
       warn ".env.development ausente. Criado a partir do .env atual."
     fi
     replace_or_append_env_var "$APP_ENV_FILE" NODE_ENV development
-    chown "$APP_USER:$APP_GROUP" "$APP_ENV_FILE"
-    chmod 0640 "$APP_ENV_FILE"
+    run_priv chown "$APP_USER:$APP_GROUP" "$APP_ENV_FILE"
+    run_priv chmod 0640 "$APP_ENV_FILE"
 
     info "Instalando dependências de desenvolvimento..."
     run_as_app "cd '$INSTALL_DIR' && rm -rf node_modules"
@@ -666,28 +880,28 @@ toggle_mode() {
     else
       run_as_app "cd '$INSTALL_DIR' && npm install --silent --cache '$APP_HOME/.npm'"
     fi
-    chown -R "$APP_USER:$APP_GROUP" "$INSTALL_DIR"
+    run_priv chown -R "$APP_USER:$APP_GROUP" "$INSTALL_DIR"
 
     restart_pm2_current_mode
     success "Aplicação alternada para DEV."
 
   else
-    cp "$APP_ENV_FILE" "$APP_ENV_DEV"
-    chown "$APP_USER:$APP_GROUP" "$APP_ENV_DEV"
-    chmod 0640 "$APP_ENV_DEV"
+    run_priv cp "$APP_ENV_FILE" "$APP_ENV_DEV"
+    run_priv chown "$APP_USER:$APP_GROUP" "$APP_ENV_DEV"
+    run_priv chmod 0640 "$APP_ENV_DEV"
     success "Snapshot salvo: .env.development"
 
     if [[ -f "$APP_ENV_PROD" ]]; then
-      cp "$APP_ENV_PROD" "$APP_ENV_FILE"
+      run_priv cp "$APP_ENV_PROD" "$APP_ENV_FILE"
       success ".env.production restaurado."
     else
-      cp "$APP_ENV_DEV" "$APP_ENV_FILE"
+      run_priv cp "$APP_ENV_DEV" "$APP_ENV_FILE"
       replace_or_append_env_var "$APP_ENV_FILE" NODE_ENV production
       warn ".env.production ausente. Criado a partir do .env atual."
     fi
     replace_or_append_env_var "$APP_ENV_FILE" NODE_ENV production
-    chown "$APP_USER:$APP_GROUP" "$APP_ENV_FILE"
-    chmod 0640 "$APP_ENV_FILE"
+    run_priv chown "$APP_USER:$APP_GROUP" "$APP_ENV_FILE"
+    run_priv chmod 0640 "$APP_ENV_FILE"
 
     info "Executando build limpo de produção..."
     run_as_app "cd '$INSTALL_DIR' && rm -rf node_modules dist"
@@ -702,7 +916,7 @@ toggle_mode() {
 
     build_server_if_needed
     run_as_app "cd '$INSTALL_DIR' && npm prune --omit=dev --silent" || true
-    chown -R "$APP_USER:$APP_GROUP" "$INSTALL_DIR"
+    run_priv chown -R "$APP_USER:$APP_GROUP" "$INSTALL_DIR"
 
     restart_pm2_current_mode
     success "Aplicação alternada para PROD."
@@ -728,6 +942,7 @@ main_menu() {
     echo -e "  ${C_BOLD}[3]${C_RESET} Banco de Dados"
     echo -e "  ${C_BOLD}[4]${C_RESET} Diagnóstico"
     echo -e "  ${C_BOLD}[5]${C_RESET} MODE ($(mode_label))"
+    echo -e "  ${C_BOLD}[6]${C_RESET} Deploy"
     echo -e "  ${C_BOLD}[S]${C_RESET} Sair"
     echo
     ask_option
@@ -738,6 +953,7 @@ main_menu() {
       3) menu_banco ;;
       4) menu_diagnostico ;;
       5) toggle_mode ;;
+      6) menu_deploy ;;
       S) echo; success "Saindo."; echo; break ;;
       *) warn "Opção inválida."; pause ;;
     esac
@@ -751,6 +967,7 @@ bootstrap_checks() {
   resolve_php_fpm
   load_app_env
   resolve_domain
+  resolve_repo_dir
 }
 
 bootstrap_checks
