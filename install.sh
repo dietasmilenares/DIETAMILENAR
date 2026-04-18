@@ -235,7 +235,7 @@ echo -e "  Arquivo ZIP:   ${CYAN}$ZIP_FILE${NC}"
 echo -e "  App Principal: ${CYAN}http://$DOMAIN${NC}"
 echo -e "  Social Proof:  ${CYAN}http://$DOMAIN/socialproof${NC}"
 if [[ "$INSTALL_PMA" =~ ^[sS]$ ]]; then
-  echo -e "  phpMyAdmin:    ${CYAN}http://$DOMAIN/phpmyadmin${NC} (restrito via Nginx)"
+  echo -e "  phpMyAdmin:    ${CYAN}http://$DOMAIN/phpmyadmin${NC} (acesso remoto liberado)"
 else
   echo -e "  phpMyAdmin:    ${CYAN}NÃO${NC}"
 fi
@@ -346,7 +346,7 @@ log_status "Bancos e permissões criados."
 # --- ETAPA 3 ---
 header "ETAPA 3 — PHPMYADMIN"
 PMA_DIR="/var/www/phpmyadmin"
-PMA_VER="5.2.1"
+PMA_VER="5.2.3"
 
 PHP_FPM_SOCK=$(find /run/php/ /var/run/php/ -type s -name "php*-fpm.sock" 2>/dev/null | sort -Vr | head -1)
 [[ -S "$PHP_FPM_SOCK" ]] || log_error "Socket PHP-FPM não detectado."
@@ -656,21 +656,15 @@ fi
 # --- ETAPA 11 ---
 header "ETAPA 11 — CONFIGURANDO NGINX"
 
-ADMIN_IP="127.0.0.1"
-if [[ -n "${SSH_CONNECTION:-}" ]]; then
-  ADMIN_IP="$(awk '{print $1}' <<<"$SSH_CONNECTION")"
-  is_valid_ipv4 "$ADMIN_IP" || ADMIN_IP="127.0.0.1"
-fi
-
 PMA_LOCATION=""
 if [[ "$INSTALL_PMA" =~ ^[sS]$ ]]; then
 PMA_LOCATION="
-    location ^~ /phpmyadmin {
+    location = /phpmyadmin { return 301 \$scheme://\$host/phpmyadmin/; }
+
+    location ^~ /phpmyadmin/ {
         root /var/www;
         index index.php index.html;
-        allow ${ADMIN_IP};
-        allow 127.0.0.1;
-        deny all;
+        try_files \$uri \$uri/ /phpmyadmin/index.php\$is_args\$args;
 
         location ~ ^/phpmyadmin/.+\.php\$ {
             include fastcgi_params;
@@ -880,154 +874,8 @@ center_print "INSTALAÇÃO CONCLUÍDA COM SUCESSO" "$GREEN"
 draw_line "━" "$GREEN"
 echo -e "\n  URL Principal: ${CYAN}${BOLD}http://$DOMAIN${NC}"
 if [[ "$INSTALL_PMA" =~ ^[sS]$ ]]; then
-  echo -e "  phpMyAdmin:    ${CYAN}http://$DOMAIN/phpmyadmin${NC} (Acesso apenas de: ${ADMIN_IP})"
+  echo -e "  phpMyAdmin:    ${CYAN}http://$DOMAIN/phpmyadmin${NC} (Acesso remoto liberado)"
 fi
 echo -e "  Log Install:   ${YELLOW}$LOG_FILE${NC}"
 echo -e "\n  Monitor PM2:   ${BOLD}runuser -l $APP_USER -c '$PM2_BIN monit'${NC}\n"
 draw_line "━" "$GREEN"
-
-# =============================================================================
-#  MENU PÓS-INSTALAÇÃO
-# =============================================================================
-
-menu_servicos() {
-  while true; do
-    clear
-    echo -e "\n${BOLD}${CYAN}  ── SERVIÇOS ──────────────────────────────────────${NC}\n"
-    echo -e "  ${BOLD}1${NC}  Status geral"
-    echo -e "  ${BOLD}2${NC}  Reiniciar tudo"
-    echo -e "  ${BOLD}3${NC}  Reiniciar Nginx"
-    echo -e "  ${BOLD}4${NC}  Reiniciar PM2"
-    echo -e "  ${BOLD}5${NC}  Reiniciar MariaDB"
-    echo -e "  ${BOLD}0${NC}  Voltar"
-    echo ""
-    read -rp "  Opção: " OPT
-    case "$OPT" in
-      1)
-        echo ""
-        echo -e "  ${BOLD}Nginx:${NC}";   systemctl is-active nginx   && echo -e "  ${GREEN}[✔] online${NC}" || echo -e "  ${RED}[✘] offline${NC}"
-        echo -e "  ${BOLD}MariaDB:${NC}"; systemctl is-active mariadb && echo -e "  ${GREEN}[✔] online${NC}" || echo -e "  ${RED}[✘] offline${NC}"
-        echo -e "  ${BOLD}PHP-FPM:${NC}"; systemctl is-active php-fpm 2>/dev/null && echo -e "  ${GREEN}[✔] online${NC}" || echo -e "  ${RED}[✘] offline${NC}"
-        echo -e "  ${BOLD}PM2:${NC}";     runuser -l "$APP_USER" -c "$PM2_BIN list" 2>/dev/null || echo -e "  ${RED}[✘] PM2 indisponível${NC}"
-        read -rp $'\n  ENTER para continuar...' _
-        ;;
-      2)
-        systemctl restart nginx mariadb
-        runuser -l "$APP_USER" -c "$PM2_BIN restart dieta-milenar" 2>/dev/null || true
-        echo -e "  ${GREEN}[✔]${NC} Tudo reiniciado."
-        read -rp $'\n  ENTER para continuar...' _
-        ;;
-      3) systemctl restart nginx   && echo -e "  ${GREEN}[✔]${NC} Nginx reiniciado."   ; read -rp $'\n  ENTER...' _ ;;
-      4) runuser -l "$APP_USER" -c "$PM2_BIN restart dieta-milenar" && echo -e "  ${GREEN}[✔]${NC} PM2 reiniciado." ; read -rp $'\n  ENTER...' _ ;;
-      5) systemctl restart mariadb && echo -e "  ${GREEN}[✔]${NC} MariaDB reiniciado." ; read -rp $'\n  ENTER...' _ ;;
-      0) break ;;
-    esac
-  done
-}
-
-menu_logs() {
-  while true; do
-    clear
-    echo -e "\n${BOLD}${CYAN}  ── LOGS ───────────────────────────────────────────${NC}\n"
-    echo -e "  ${BOLD}1${NC}  Logs Dieta Milenar (PM2)"
-    echo -e "  ${BOLD}2${NC}  Logs Nginx (error)"
-    echo -e "  ${BOLD}3${NC}  Log da instalação"
-    echo -e "  ${BOLD}0${NC}  Voltar"
-    echo ""
-    read -rp "  Opção: " OPT
-    case "$OPT" in
-      1) runuser -l "$APP_USER" -c "$PM2_BIN logs dieta-milenar --lines 50 --nostream" 2>/dev/null || echo -e "  ${RED}[✘]${NC} PM2 indisponível" ; read -rp $'\n  ENTER...' _ ;;
-      2) tail -n 50 /var/log/nginx/dieta-milenar.error.log 2>/dev/null || echo -e "  ${RED}[✘]${NC} Log não encontrado" ; read -rp $'\n  ENTER...' _ ;;
-      3) tail -n 50 "$LOG_FILE" 2>/dev/null || echo -e "  ${RED}[✘]${NC} Log não encontrado" ; read -rp $'\n  ENTER...' _ ;;
-      0) break ;;
-    esac
-  done
-}
-
-menu_banco() {
-  while true; do
-    clear
-    echo -e "\n${BOLD}${CYAN}  ── BANCO DE DADOS ─────────────────────────────────${NC}\n"
-    echo -e "  ${BOLD}1${NC}  Acessar MySQL"
-    echo -e "  ${BOLD}2${NC}  Backup do banco"
-    echo -e "  ${BOLD}0${NC}  Voltar"
-    echo ""
-    read -rp "  Opção: " OPT
-    case "$OPT" in
-      1) mysql -u "$DB_USER" -p"$DB_PASS" "$DB_NAME" ;;
-      2)
-        BACKUP_FILE="/root/backup_${DB_NAME}_$(date +%Y%m%d_%H%M%S).sql"
-        export MYSQL_PWD="$DB_PASS"
-        mysqldump -u "$DB_USER" "$DB_NAME" > "$BACKUP_FILE"
-        unset MYSQL_PWD
-        echo -e "  ${GREEN}[✔]${NC} Backup salvo em: ${CYAN}$BACKUP_FILE${NC}"
-        read -rp $'\n  ENTER...' _
-        ;;
-      0) break ;;
-    esac
-  done
-}
-
-menu_diagnostico() {
-  while true; do
-    clear
-    echo -e "\n${BOLD}${CYAN}  ── DIAGNÓSTICO ─────────────────────────────────────${NC}\n"
-    echo -e "  ${BOLD}1${NC}  Verificar portas em uso"
-    echo -e "  ${BOLD}2${NC}  Testar URLs"
-    echo -e "  ${BOLD}3${NC}  Checar versões instaladas"
-    echo -e "  ${BOLD}0${NC}  Voltar"
-    echo ""
-    read -rp "  Opção: " OPT
-    case "$OPT" in
-      1)
-        echo -e "\n  ${BOLD}Portas em uso:${NC}"
-        ss -tlnp | grep -E ':(80|443|3000|3306|8080) ' || echo "  Nenhuma porta relevante encontrada"
-        read -rp $'\n  ENTER...' _
-        ;;
-      2)
-        echo ""
-        for URL in "http://127.0.0.1" "http://127.0.0.1/socialproof/" "http://127.0.0.1:${APP_PORT}"; do
-          if curl -fsS --max-time 5 "$URL" -o /dev/null; then
-            echo -e "  ${GREEN}[✔]${NC} $URL"
-          else
-            echo -e "  ${RED}[✘]${NC} $URL"
-          fi
-        done
-        read -rp $'\n  ENTER...' _
-        ;;
-      3)
-        echo ""
-        echo -e "  ${BOLD}Node:${NC}  $(node -v 2>/dev/null || echo 'não instalado')"
-        echo -e "  ${BOLD}PHP:${NC}   $(php -v 2>/dev/null | head -1 || echo 'não instalado')"
-        echo -e "  ${BOLD}Nginx:${NC} $(nginx -v 2>&1 || echo 'não instalado')"
-        echo -e "  ${BOLD}MySQL:${NC} $(mysql --version 2>/dev/null || echo 'não instalado')"
-        echo -e "  ${BOLD}PM2:${NC}   $(runuser -l "$APP_USER" -c "$PM2_BIN -v" 2>/dev/null || echo 'não instalado')"
-        read -rp $'\n  ENTER...' _
-        ;;
-      0) break ;;
-    esac
-  done
-}
-
-while true; do
-  clear
-  echo -e "${BGDARK}${GOLD}${BOLD}"
-  draw_line "═" "$GOLD" "$BGDARK"
-  center_print "DIETA MILENAR — PAINEL PÓS-INSTALAÇÃO" "${BGDARK}${GOLD}"
-  draw_line "═" "$GOLD" "$BGDARK"
-  echo -e "${NC}"
-  echo -e "  ${BOLD}1${NC}  Serviços"
-  echo -e "  ${BOLD}2${NC}  Logs"
-  echo -e "  ${BOLD}3${NC}  Banco de Dados"
-  echo -e "  ${BOLD}4${NC}  Diagnóstico"
-  echo -e "  ${BOLD}0${NC}  Sair"
-  echo ""
-  read -rp "  Opção: " MENU_OPT
-  case "$MENU_OPT" in
-    1) menu_servicos ;;
-    2) menu_logs ;;
-    3) menu_banco ;;
-    4) menu_diagnostico ;;
-    0) echo -e "\n  Até logo!\n"; break ;;
-  esac
-done
