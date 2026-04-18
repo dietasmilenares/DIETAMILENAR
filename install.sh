@@ -603,16 +603,19 @@ log_status "Permissões configuradas."
 # --- ETAPA 9.1 ---
 header "ETAPA 9.1 — INSTALANDO MENU E COMANDO START"
 
-MENU_SRC="$REPO_DIR/menuFULL.sh"
+MENU_SRC=""
+for candidate in "$REPO_DIR/menu.sh" "$REPO_DIR/menuFULL.sh"; do
+  [[ -f "$candidate" ]] && MENU_SRC="$candidate" && break
+done
 
-if [[ -f "$MENU_SRC" ]]; then
-  install -m 0750 -o root -g root "$MENU_SRC" "$INSTALL_DIR/menuFULL.sh"
+if [[ -n "$MENU_SRC" ]]; then
+  install -m 0750 -o root -g root "$MENU_SRC" "$INSTALL_DIR/menu.sh"
 
   cat > /usr/local/bin/start <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
-MENU_PATH="/var/www/dieta-milenar/menuFULL.sh"
+MENU_PATH="/var/www/dieta-milenar/menu.sh"
 
 if [[ ! -f "$MENU_PATH" ]]; then
   echo "Menu não encontrado: $MENU_PATH" >&2
@@ -661,10 +664,10 @@ EOF
     ensure_start_alias ubuntu /home/ubuntu ubuntu
   fi
 
-  log_status "Menu instalado em $INSTALL_DIR/menuFULL.sh"
+  log_status "Menu instalado em $INSTALL_DIR/menu.sh"
   log_status "Comando 'start' criado em /usr/local/bin/start"
 else
-  log_warn "menuFULL.sh não encontrado em $REPO_DIR. Instalação seguirá sem o comando 'start'."
+  log_warn "menu.sh/menuFULL.sh não encontrado em $REPO_DIR. Instalação seguirá sem o comando 'start'."
 fi
 
 # --- ETAPA 10 ---
