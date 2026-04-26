@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-#  SaaS DIETA MILENAR — INSTALADOR OFICIAL v1.2.6 (PROD HARDENED - ZIP FIXED)
+#  SaaS DIETA MILENAR — INSTALADOR OFICIAL v2.0.0 ENTERPRISE HARDENED
 #  Suporte: Ubuntu 20.04+ / Debian 11+ | Modo: Idempotente
 # =============================================================================
 
@@ -56,6 +56,32 @@ sql_escape_literal() {
   printf "%s" "$s"
 }
 
+
+ensure_base_packages() {
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -qq >/dev/null 2>&1 || true
+  apt-get install -y -qq --no-install-recommends ca-certificates curl git unzip rsync openssl gnupg lsb-release >/dev/null 2>&1 || true
+}
+
+ensure_app_user() {
+  if ! getent group "$APP_GROUP" >/dev/null 2>&1; then
+    groupadd --system "$APP_GROUP"
+  fi
+  if ! getent passwd "$APP_USER" >/dev/null 2>&1; then
+    useradd --system --home-dir "$APP_HOME" --create-home --shell /bin/bash --gid "$APP_GROUP" "$APP_USER"
+  else
+    usermod -d "$APP_HOME" -s /bin/bash -g "$APP_GROUP" "$APP_USER" >/dev/null 2>&1 || true
+  fi
+  install -d -m 0755 -o "$APP_USER" -g "$APP_GROUP" "$APP_HOME" "$APP_HOME/.npm" /var/log/dieta-milenar
+  chown -R "$APP_USER:$APP_GROUP" "$APP_HOME" /var/log/dieta-milenar
+}
+
+run_as_app() {
+  local cmd="$1"
+  getent passwd "$APP_USER" >/dev/null 2>&1 || log_error "Usuário ${APP_USER} ausente antes de executar: $cmd"
+  runuser -l "$APP_USER" -c "$cmd"
+}
+
 # --- 5. VERIFICAÇÕES DE AMBIENTE ---
 [[ ${EUID:-999} -eq 0 ]] || log_error "Execute como root: sudo bash install.sh"
 
@@ -66,12 +92,19 @@ flock -n 9 || log_error "Instalador já está rodando (lock /run/lock/dieta-mile
 APP_PORT=3000
 APP_USER="dieta"
 APP_GROUP="dieta"
+APP_HOME="/var/lib/${APP_USER}"
 INSTALL_DIR="/var/www/dieta-milenar"
 SOCIALPROOF_DIR="/var/www/socialproof"
 BIN_MENU="/usr/local/bin/menu.sh"
 START_WRAPPER="/usr/local/bin/start"
 PROFILE_ALIAS_FILE="/etc/profile.d/dieta-milenar-start.sh"
 export DEBIAN_FRONTEND=noninteractive
+
+# --- 5.1. PRE-FLIGHT ENTERPRISE ---
+header "ETAPA 0.1 — PRE-FLIGHT ENTERPRISE"
+ensure_base_packages
+ensure_app_user
+log_status "Pacotes base, usuário dedicado e diretórios protegidos validados."
 
 # --- 6. EXTRAÇÃO DO PROJETO.ZIP ---
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -307,12 +340,12 @@ if $need_node; then
 fi
 
 if ! id -u "$APP_USER" >/dev/null 2>&1; then
-  useradd --system --home-dir /var/lib/"$APP_USER" --create-home \
+  useradd --system --home-dir "$APP_HOME" --create-home \
     --shell /bin/bash --user-group "$APP_USER"
 fi
 
 install -d -m 0755 -o "$APP_USER" -g "$APP_GROUP" "/var/lib/$APP_USER"
-install -d -m 0755 -o "$APP_USER" -g "$APP_GROUP" "/var/lib/$APP_USER/.npm"
+install -d -m 0755 -o "$APP_USER" -g "$APP_GROUP" "$APP_HOME/.npm"
 
 if ! groups www-data | grep -q "\b${APP_GROUP}\b"; then
     usermod -aG "$APP_GROUP" www-data
@@ -365,7 +398,7 @@ PHP_FPM_SOCK=$(find /run/php/ /var/run/php/ -type s -name "php*-fpm.sock" 2>/dev
 
 if [[ "$INSTALL_PMA" =~ ^[sS]$ ]]; then
   if [[ ! -d "$PMA_DIR" ]]; then
-      curl -fsS --proto '=https' --tlsv1.2 \
+      curl -fL --retry 3 --retry-delay 2 --proto '=https' --tlsv1.2 \
         "https://files.phpmyadmin.net/phpMyAdmin/${PMA_VER}/phpMyAdmin-${PMA_VER}-all-languages.zip" \
         -o /tmp/pma.zip
       rm -rf /tmp/pma_ext
@@ -551,23 +584,24 @@ fi
 
 # --- ETAPA 7 ---
 header "ETAPA 7 — BUILD FRONTEND E BACKEND"
+ensure_app_user
 cd "$INSTALL_DIR"
 
 if [[ -f package-lock.json ]]; then
-  runuser -l "$APP_USER" -c "cd $INSTALL_DIR && npm ci --silent --cache /var/lib/$APP_USER/.npm"
+  run_as_app "cd $INSTALL_DIR && npm ci --silent --cache $APP_HOME/.npm"
 else
-  runuser -l "$APP_USER" -c "cd $INSTALL_DIR && npm install --silent --cache /var/lib/$APP_USER/.npm"
+  run_as_app "cd $INSTALL_DIR && npm install --silent --cache $APP_HOME/.npm"
 fi
-runuser -l "$APP_USER" -c "cd $INSTALL_DIR && npm run build --silent"
+run_as_app "cd $INSTALL_DIR && npm run build --silent"
 
 [[ -f "$INSTALL_DIR/dist/index.html" ]] || log_error "Build falhou: dist/index.html ausente."
 
 if [[ -f "$INSTALL_DIR/server.ts" && ! -f "$INSTALL_DIR/dist/server.js" ]]; then
   log_status "Convertendo server.ts para JavaScript nativo..."
-  runuser -l "$APP_USER" -c "cd $INSTALL_DIR && npx esbuild server.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/server.js >/dev/null 2>&1 || npx tsc server.ts --outDir dist >/dev/null 2>&1" || true
+  run_as_app "cd $INSTALL_DIR && npx esbuild server.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/server.js >/dev/null 2>&1 || npx tsc server.ts --outDir dist >/dev/null 2>&1" || true
 fi
 
-runuser -l "$APP_USER" -c "cd $INSTALL_DIR && npm prune --omit=dev --silent" || true
+run_as_app "cd $INSTALL_DIR && npm prune --omit=dev --silent" || true
 log_status "Compilação concluída."
 
 # --- ETAPA 8 — IMPORTANDO SQL ---
@@ -715,21 +749,21 @@ module.exports = {
 EOF
 chown "$APP_USER":"$APP_GROUP" "$INSTALL_DIR/ecosystem.config.cjs"
 
-runuser -l "$APP_USER" -c "$PM2_BIN stop dieta-milenar >/dev/null 2>&1 || true"
-runuser -l "$APP_USER" -c "$PM2_BIN delete dieta-milenar >/dev/null 2>&1 || true"
-runuser -l "$APP_USER" -c "$PM2_BIN start $INSTALL_DIR/ecosystem.config.cjs --env production"
-runuser -l "$APP_USER" -c "$PM2_BIN save --silent"
+run_as_app "$PM2_BIN stop dieta-milenar >/dev/null 2>&1 || true"
+run_as_app "$PM2_BIN delete dieta-milenar >/dev/null 2>&1 || true"
+run_as_app "$PM2_BIN start $INSTALL_DIR/ecosystem.config.cjs --env production"
+run_as_app "$PM2_BIN save --silent"
 
 PM2_GLOBAL=$(command -v pm2 || find /usr/lib/node_modules/pm2/bin /usr/local/lib/node_modules/pm2/bin -name pm2 2>/dev/null | head -1 || echo "")
 if [[ -n "$PM2_GLOBAL" ]]; then
-    env PATH=$PATH:/usr/bin "$PM2_GLOBAL" startup systemd -u "$APP_USER" --hp /var/lib/"$APP_USER" >/dev/null 2>&1 || true
+    env PATH=$PATH:/usr/bin "$PM2_GLOBAL" startup systemd -u "$APP_USER" --hp "$APP_HOME" >/dev/null 2>&1 || true
 fi
 systemctl enable pm2-"$APP_USER" >/dev/null 2>&1 || true
 
 log_status "Processo iniciado no PM2. Realizando validação pós-deploy..."
 sleep 6
 
-if runuser -l "$APP_USER" -c "$PM2_BIN list" | grep -q "dieta-milenar.*online"; then
+if run_as_app "$PM2_BIN list" | grep -q "dieta-milenar.*online"; then
     log_status "PM2 ONLINE."
     if curl -fsS --max-time 5 --retry 3 --retry-delay 2 http://127.0.0.1:${APP_PORT} >/dev/null; then
         log_status "Validação HTTP: Backend conectado (${APP_PORT})."
@@ -737,7 +771,7 @@ if runuser -l "$APP_USER" -c "$PM2_BIN list" | grep -q "dieta-milenar.*online"; 
         log_warn "ALERTA 502: PM2 online, mas porta ${APP_PORT} falhou localmente."
     fi
 else
-    runuser -l "$APP_USER" -c "$PM2_BIN logs dieta-milenar --lines 20 --nostream" || true
+    run_as_app "$PM2_BIN logs dieta-milenar --lines 20 --nostream" || true
     log_error "FALHA CRITICA: Aplicação Node travou (Crash Loop). Veja logs acima."
 fi
 

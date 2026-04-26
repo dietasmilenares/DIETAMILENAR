@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# DIETA MILENAR — UNINSTALL SEGURO / ROLLBACK DE STACK
+# DIETA MILENAR — UNINSTALL ENTERPRISE / ROLLBACK SEGURO DE STACK
 # Objetivo: remover somente o que pertence à stack do install.sh sem apagar
 # configurações genéricas do sistema por padrão.
 #
@@ -290,8 +290,7 @@ EOSQL
 SQL
   else
     "$DB_BIN" --protocol=socket -u root <<EOSQL
-DROP DATABASE IF EXISTS \
-\`${db_name_esc}\`;
+DROP DATABASE IF EXISTS \`${db_name_esc}\`;
 DROP DATABASE IF EXISTS \`socialproof\`;
 DROP USER IF EXISTS '${db_user_esc}'@'localhost';
 DROP USER IF EXISTS '${db_user_esc}'@'127.0.0.1';

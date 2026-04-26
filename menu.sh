@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# DIETA MILENAR — MENU OPERACIONAL UNIFICADO (Ubuntu 22.04+)
+# DIETA MILENAR — MENU OPERACIONAL ENTERPRISE HARDENED (Ubuntu 22.04+)
 # =============================================================================
 
 set -Eeuo pipefail
@@ -118,6 +118,21 @@ ask_option() {
 
 command_exists() { command -v "$1" >/dev/null 2>&1; }
 
+app_user_exists() { getent passwd "$APP_USER" >/dev/null 2>&1; }
+
+ensure_app_user() {
+  if ! getent group "$APP_GROUP" >/dev/null 2>&1; then
+    run_priv groupadd --system "$APP_GROUP"
+  fi
+  if ! getent passwd "$APP_USER" >/dev/null 2>&1; then
+    run_priv useradd --system --home-dir "$APP_HOME" --create-home --shell /bin/bash --gid "$APP_GROUP" "$APP_USER"
+  else
+    run_priv usermod -d "$APP_HOME" -s /bin/bash -g "$APP_GROUP" "$APP_USER" >/dev/null 2>&1 || true
+  fi
+  run_priv install -d -m 0755 -o "$APP_USER" -g "$APP_GROUP" "$APP_HOME" "$APP_HOME/.npm" /var/log/dieta-milenar
+  run_priv chown -R "$APP_USER:$APP_GROUP" "$APP_HOME" /var/log/dieta-milenar >/dev/null 2>&1 || true
+}
+
 run_priv() {
   if command -v sudo >/dev/null 2>&1; then
     sudo "$@"
@@ -137,7 +152,14 @@ run_priv_shell() {
 
 run_as_app() {
   local cmd="$1"
+  app_user_exists || return 127
   run_priv runuser -l "$APP_USER" -c "$cmd"
+}
+
+run_as_app_safe() {
+  local cmd="$1"
+  app_user_exists || return 0
+  run_as_app "$cmd" || true
 }
 
 resolve_repo_dir() {
@@ -165,10 +187,21 @@ resolve_repo_dir() {
 
 ensure_repo_dir() {
   resolve_repo_dir
-  [[ -n "${REPO_DIR:-}" && -d "$REPO_DIR" ]] || {
-    fail "Repositório não encontrado."
-    return 1
-  }
+  if [[ -n "${REPO_DIR:-}" && -d "$REPO_DIR" ]]; then
+    return 0
+  fi
+  warn "Repositório local não encontrado. Tentando clonar em ${DEFAULT_REPO_DIR}."
+  run_priv mkdir -p "$(dirname "$DEFAULT_REPO_DIR")"
+  run_priv rm -rf "$DEFAULT_REPO_DIR"
+  if run_priv git clone "$GIT_REPO_URL" "$DEFAULT_REPO_DIR"; then
+    REPO_DIR="$DEFAULT_REPO_DIR"
+    INSTALL_SH_PATH="$REPO_DIR/install.sh"
+    UNINSTALL_SH_PATH="$REPO_DIR/unistall.sh"
+    MENU_REPO_PATH="$REPO_DIR/menu.sh"
+    return 0
+  fi
+  fail "Repositório não encontrado e clone falhou."
+  return 1
 }
 
 ensure_repo_scripts_permissions() {
@@ -417,10 +450,12 @@ mode_label() {
 }
 
 pm2_process_exists() {
+  app_user_exists || return 1
   run_as_app "$PM2_BIN jlist" 2>/dev/null | grep -q '"name":"'"$APP_PM2_NAME"'"'
 }
 
 pm2_process_online() {
+  app_user_exists || return 1
   run_as_app "$PM2_BIN jlist" 2>/dev/null | grep -q '"name":"'"$APP_PM2_NAME"'".*"status":"online"'
 }
 
@@ -475,19 +510,24 @@ stop_stack_services() {
   resolve_mariadb_service
   resolve_php_fpm
 
-  run_as_app "$PM2_BIN stop '$APP_PM2_NAME' >/dev/null 2>&1 || true"
-  run_as_app "$PM2_BIN delete '$APP_PM2_NAME' >/dev/null 2>&1 || true"
-  run_as_app "$PM2_BIN save --silent >/dev/null 2>&1 || true"
+  if app_user_exists; then
+    run_as_app_safe "$PM2_BIN stop '$APP_PM2_NAME' >/dev/null 2>&1 || true"
+    run_as_app_safe "$PM2_BIN delete '$APP_PM2_NAME' >/dev/null 2>&1 || true"
+    run_as_app_safe "$PM2_BIN save --silent >/dev/null 2>&1 || true"
+  else
+    warn "Usuário ${APP_USER} ainda não existe — PM2 ignorado nesta etapa."
+  fi
 
   [[ -n "${PHP_FPM_SERVICE:-}" ]] && run_priv systemctl stop "$PHP_FPM_SERVICE" >/dev/null 2>&1 || true
   [[ -n "${DB_SERVICE:-}" ]] && run_priv systemctl stop "$DB_SERVICE" >/dev/null 2>&1 || true
   run_priv systemctl stop nginx >/dev/null 2>&1 || true
 
-  success "Processos da stack parados."
+  success "Processos existentes da stack foram parados com segurança."
 }
 
 start_stack_services() {
   section "DEPLOY — INICIALIZANDO STACK"
+  ensure_app_user
   resolve_pm2_bin
   resolve_mariadb_service
   resolve_php_fpm
@@ -511,6 +551,7 @@ start_stack_services() {
 }
 
 restart_pm2_current_mode() {
+  ensure_app_user
   local mode
   mode="$(get_current_mode)"
   run_as_app "$PM2_BIN delete $APP_PM2_NAME >/dev/null 2>&1 || true"
@@ -529,8 +570,10 @@ restart_pm2_current_mode() {
 }
 
 deploy_install() {
-  stop_stack_services
+  ensure_app_user
   ensure_repo_scripts_permissions || return 1
+  install_system_menu_assets "$MENU_REPO_PATH" >/dev/null 2>&1 || true
+  stop_stack_services
   [[ -f "$INSTALL_SH_PATH" ]] || { fail "install.sh não encontrado."; pause; return; }
   info "Executando install.sh"
   run_priv bash "$INSTALL_SH_PATH"
@@ -545,6 +588,7 @@ deploy_remove() {
 }
 
 deploy_update() {
+  ensure_app_user
   stop_stack_services
   ensure_repo_dir || return 1
 
@@ -573,6 +617,13 @@ deploy_update() {
   info "Origem do payload detectada: $UPDATE_SOURCE_DESC"
 
   run_priv install -d -m 0750 -o "$APP_USER" -g "$APP_GROUP" "$INSTALL_DIR"
+
+  if [[ -d "$INSTALL_DIR" ]]; then
+    BACKUP_DIR_UPDATE="$BACKUP_DIR/app_$(date +%Y%m%d_%H%M%S)"
+    info "Criando backup rápido da aplicação atual em $BACKUP_DIR_UPDATE"
+    run_priv install -d -m 0700 "$BACKUP_DIR"
+    run_priv rsync -a --exclude='node_modules' --exclude='dist' "$INSTALL_DIR/" "$BACKUP_DIR_UPDATE/" >/dev/null 2>&1 || true
+  fi
 
   info "Sincronizando aplicação final sem sobrescrever arquivos de ambiente"
   run_priv rsync -a --delete \
@@ -626,6 +677,7 @@ deploy_update() {
 }
 
 deploy_initialize() {
+  ensure_app_user
   stop_stack_services
   start_stack_services
   pause
@@ -633,6 +685,7 @@ deploy_initialize() {
 
 apply_permissions_fix() {
   section "FIX — REAPLICANDO PERMISSÕES"
+  ensure_app_user
 
   run_priv install -d -m 0750 -o "$APP_USER" -g "$APP_GROUP" "$INSTALL_DIR"
   run_priv install -d -m 0755 -o "$APP_USER" -g "$APP_GROUP" /var/log/dieta-milenar
@@ -974,7 +1027,7 @@ menu_diagnostico() {
         echo -e "  ${C_BOLD}PHP:${C_RESET}      $(php -v 2>/dev/null | head -1 || echo 'não instalado')"
         echo -e "  ${C_BOLD}Nginx:${C_RESET}    $(nginx -v 2>&1 || echo 'não instalado')"
         echo -e "  ${C_BOLD}MariaDB:${C_RESET}  $(${DB_CLIENT_BIN:-mariadb} --version 2>/dev/null || echo 'não instalado')"
-        echo -e "  ${C_BOLD}PM2:${C_RESET}      $(run_as_app "$PM2_BIN -v" 2>/dev/null || echo 'não instalado')"
+        echo -e "  ${C_BOLD}PM2:${C_RESET}      $(app_user_exists && run_as_app "$PM2_BIN -v" 2>/dev/null || echo 'não instalado')"
         pause
         ;;
       0) break ;;
